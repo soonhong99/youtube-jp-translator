@@ -1,0 +1,56 @@
+type Query {
+  translation(id: ID!): Translation
+  translations(limit: Int = 10, offset: Int = 0): [Translation!]!
+}
+
+type Mutation {
+  requestTranslation(input: TranslationRequest!): TranslationJob!
+}
+
+type Subscription {
+  translationProgress(id: ID!): TranslationStatus!
+}
+
+input TranslationRequest {
+  youtubeUrl: String!
+  includeOriginal: Boolean = true
+}
+
+type TranslationJob {
+  id: ID!
+  status: ProcessingStatus!
+}
+
+type TranslationStatus {
+  id: ID!
+  status: ProcessingStatus!
+  progress: Float!
+  currentStage: String
+}
+
+type Translation {
+  id: ID!
+  youtubeUrl: String!
+  videoTitle: String
+  videoDuration: Int
+  status: ProcessingStatus!
+  createdAt: String!
+  completedAt: String
+  segments: [TranslatedSegment!]
+}
+
+type TranslatedSegment {
+  startTime: Float!
+  endTime: Float!
+  originalText: String
+  translatedText: String!
+}
+
+enum ProcessingStatus {
+  PENDING
+  EXTRACTING
+  TRANSCRIBING
+  TRANSLATING
+  COMPLETED
+  FAILED
+}
