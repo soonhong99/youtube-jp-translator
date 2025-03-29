@@ -1,0 +1,74 @@
+openapi: 3.0.0
+info:
+  title: 유튜브 일본어 번역 서비스 API
+  version: 1.0.0
+  description: 유튜브 동영상에서 일본어 구어체를 한국어로 번역하는 서비스 API
+paths:
+  /api/v1/translations:
+    post:
+      summary: 새 번역 작업 요청
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - youtube_url
+              properties:
+                youtube_url:
+                  type: string
+                  description: 유튜브 영상 URL
+                options:
+                  type: object
+                  properties:
+                    include_original:
+                      type: boolean
+                      description: 원본 일본어 텍스트 포함 여부
+      responses:
+        '202':
+          description: 번역 작업 접수됨
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_id:
+                    type: string
+                    description: 작업 ID
+                  status:
+                    type: string
+                    enum: [PENDING]
+                    description: 작업 상태
+
+  /api/v1/translations/{request_id}:
+    get:
+      summary: 번역 작업 상태 조회
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 번역 작업 상태
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [PENDING, EXTRACTING, TRANSCRIBING, TRANSLATING, COMPLETED, FAILED]
+                  progress:
+                    type: number
+                    format: float
+                    minimum: 0
+                    maximum: 1
+                  result:
+                    type: object
+                    properties:
+                      # 결과 스키마 정의
