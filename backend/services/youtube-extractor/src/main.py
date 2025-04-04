@@ -1,155 +1,78 @@
-"""YouTube Extractor API service.
-
-This module provides a FastAPI application to extract audio from YouTube videos.
-"""
-
+import logging
 import os
-from typing import Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
+from typing import Optional, Dict, Any
 
 from .extractor import YouTubeExtractor
-from config.settings import AUDIO_OUTPUT_DIR, DEFAULT_AUDIO_FORMAT
 
-app = FastAPI(
-    title="YouTube Audio Extractor",
-    description="Extract audio from YouTube videos for STT processing",
-    version="0.1.0",
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
-# Create extractor instance
-extractor = YouTubeExtractor()
+# FastAPI 앱 초기화
+app = FastAPI(title="YouTube Audio Extractor Service")
 
-class YouTubeRequest(BaseModel):
-    """Request model for YouTube audio extraction."""
-    
-    url: HttpUrl
-    audio_format: Optional[str] = DEFAULT_AUDIO_FORMAT
-    filename: Optional[str] = None
+# 입력 모델 정의
+class YouTubeExtractionRequest(BaseModel):
+    youtube_url: HttpUrl
+    output_format: str = "wav"  # 'wav' 또는 'mp3'
+    sample_rate: int = 16000
+    channels: int = 1
 
-class YouTubeResponse(BaseModel):
-    """Response model for YouTube audio extraction."""
-    
+# 응답 모델 정의
+class YouTubeExtractionResponse(BaseModel):
     file_path: str
-    download_url: str
-    video_title: str
+    duration: float
+    video_info: Dict[str, Any]
 
-@app.post("/extract", response_model=YouTubeResponse)
-async def extract_audio(request: YouTubeRequest):
-    """Extract audio from a YouTube video.
-    
-    Args:
-        request: YouTube extraction request
-        
-    Returns:
-        YouTubeResponse: Response with file path and download URL
+# 추출기 인스턴스 생성
+output_dir = os.getenv("OUTPUT_DIR", "./downloads")
+extractor = YouTubeExtractor(output_dir=output_dir)
+
+@app.post("/extract", response_model=YouTubeExtractionResponse)
+async def extract_audio(request: YouTubeExtractionRequest):
+    """
+    YouTube URL에서 오디오를 추출하고 STT 모델에 적합한 형식으로 변환
     """
     try:
-        # Validate audio format
-        if request.audio_format not in ["mp3", "wav"]:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Unsupported audio format: {request.audio_format}"
-            )
+        # 추출기 설정 업데이트
+        extractor.preferred_format = request.output_format
+        extractor.sample_rate = request.sample_rate
+        extractor.channels = request.channels
         
-        # Set the extractor format if specified
-        if request.audio_format != extractor.audio_format:
-            extractor.audio_format = request.audio_format
+        # 오디오 추출
+        audio_path, video_info = extractor.extract_audio(str(request.youtube_url))
         
-        # Extract audio
-        file_path, video_title = extractor.extract_audio(
-            youtube_url=str(request.url),  # Convert HttpUrl to str
-            filename=request.filename
-        )
+        # 응답 준비
+        duration = video_info.get('duration', 0) if video_info else 0
         
-        # Get the filename from the path
-        filename = os.path.basename(file_path)
-        
-        return YouTubeResponse(
-            file_path=file_path,
-            download_url=f"/download/{filename}",
-            video_title=video_title
-        )
-        
+        return {
+            "file_path": audio_path,
+            "duration": duration,
+            "video_info": video_info
+        }
+    
     except Exception as e:
+        logger.error(f"오디오 추출 중 오류 발생: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/download/{filename}")
-async def download_file(filename: str):
-    """Download an extracted audio file.
-    
-    Args:
-        filename: Name of the file to download
-        
-    Returns:
-        FileResponse: The audio file
-    """
-    file_path = os.path.join(AUDIO_OUTPUT_DIR, filename)
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-        
-    return FileResponse(
-        path=file_path,
-        filename=filename,
-        media_type=f"audio/{os.path.splitext(filename)[1].lstrip('.')}"
-    )
 
 @app.get("/info")
-async def get_video_info(url: HttpUrl):
-    """Get information about a YouTube video.
-    
-    Args:
-        url: YouTube URL
-        
-    Returns:
-        dict: Video information
+async def get_video_info(youtube_url: HttpUrl):
+    """
+    YouTube 비디오 정보 가져오기 (다운로드 없음)
     """
     try:
-        return extractor.get_video_info(str(url))
+        video_info = extractor.get_video_info(str(youtube_url))
+        return video_info
+    
     except Exception as e:
+        logger.error(f"비디오 정보 가져오기 중 오류 발생: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/files/{filename}")
-async def delete_file(filename: str, background_tasks: BackgroundTasks):
-    """Delete an extracted audio file.
-    
-    Args:
-        filename: Name of the file to delete
-        background_tasks: Background tasks for async deletion
-        
-    Returns:
-        dict: Success message
-    """
-    file_path = os.path.join(AUDIO_OUTPUT_DIR, filename)
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    def remove_file(path: str):
-        try:
-            os.remove(path)
-        except Exception:
-            pass
-    
-    background_tasks.add_task(remove_file, file_path)
-    return {"message": f"File {filename} will be deleted"}
-
-@app.get("/")
-async def root():
-    """API root endpoint.
-    
-    Returns:
-        dict: API information
-    """
-    return {
-        "service": "YouTube Audio Extractor",
-        "version": "0.1.0",
-        "endpoints": [
-            {"path": "/extract", "method": "POST", "description": "Extract audio from YouTube"},
-            {"path": "/download/{filename}", "method": "GET", "description": "Download extracted audio"},
-            {"path": "/info", "method": "GET", "description": "Get YouTube video information"},
-            {"path": "/files/{filename}", "method": "DELETE", "description": "Delete extracted audio file"}
-        ]
-    }
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
