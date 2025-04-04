@@ -1,0 +1,5 @@
+yt-dlp
+pydub
+ffmpeg-python
+fastapi
+uvicorn
