@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  youtube-extractor:
+    build: ./services/youtube-extractor # youtube-extractor 서비스의 Dockerfile 경로
+    container_name: youtube-extractor-service
+    ports:
+      - "8000:8000" # 호스트 포트:컨테이너 포트
+    volumes:
+      # 공유 볼륨 설정: 호스트 경로 또는 Docker 관리 볼륨 사용
+      # Docker 관리 볼륨 사용 예시:
+      - youtube_audio_data:/app/downloads # 볼륨 이름:컨테이너 내부 경로
+      # 호스트 경로 마운트 예시 (로컬에 audio_data 폴더 생성 필요):
+      # - ./audio_data:/app/downloads
+    environment:
+      # youtube-extractor 컨테이너 내부의 오디오 저장 경로 설정
+      - OUTPUT_DIR=/app/downloads
+      # 필요한 다른 환경 변수 추가
+    restart: unless-stopped
+
+  stt-processor:
+    build:
+      context: ./services/stt-processor # stt-processor 서비스의 Dockerfile 경로
+      args:
+        # Dockerfile 빌드 시 사용할 모델 크기 지정 (변경 가능)
+        MODEL_SIZE: base # 예: base, small, medium, large-v2
+    container_name: stt-processor-service
+    ports:
+      - "8001:8001"
+    volumes:
+      # youtube-extractor와 동일한 볼륨을 마운트하여 WAV 파일 접근
+      - youtube_audio_data:/app/downloads # 볼륨 이름:컨테이너 내부 경로 (WAV 파일 읽는 경로)
+      # (옵션 2) 모델 파일을 호스트에 저장하고 마운트 (Dockerfile에서 다운로드 안 할 경우)
+      # - ./stt_models:/app/models # 호스트 경로:컨테이너 내부 모델 경로
+      - faster_whisper_models:/app/models # Docker 관리 볼륨 사용 예시
+    environment:
+      # stt.py에서 사용할 환경 변수 설정
+      - MODEL_DIR=/app/models # 컨테이너 내부 모델 경로
+      - MODEL_SIZE=base       # 사용할 모델 크기 (Dockerfile ARG와 일치)
+      - DEVICE=cpu            # "cpu" 또는 "cuda"
+      - COMPUTE_TYPE=int8     # "int8", "float16" 등
+      # - PYTHONUNBUFFERED=1    # 로그 즉시 출력 (디버깅 시 유용)
+    # GPU 사용 시 nvidia runtime 설정 추가
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1 # 사용할 GPU 수
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    # depends_on: # 필요하다면 서비스 시작 순서 정의
+    #   - youtube-extractor
+
+# Docker 관리 볼륨 정의
+volumes:
+  youtube_audio_data: # 오디오 파일 공유용
+  faster_whisper_models: # Faster-Whisper 모델 저장용 (옵션)

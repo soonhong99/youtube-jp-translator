@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]  # 웹 서버
+faster-whisper     # STT 모델 라이브러리
+torch              # Faster-Whisper의 의존성 (CPU 버전)
+# torch torchvision torchaudio # GPU 사용 시 CUDA 버전에 맞는 PyTorch 설치 필요
+python-dotenv      # 환경 변수 관리 (선택 사항)
+# 필요한 경우 오디오 처리 라이브러리 추가 (예: librosa)
