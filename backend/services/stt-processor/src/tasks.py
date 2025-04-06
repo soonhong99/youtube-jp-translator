@@ -1,3 +1,7 @@
+import json
+import redis
+from .redis_client import get_redis_client, get_message_ttl # Redis 클라이언트 함수 임포트
+
 import os
 import math
 import logging
@@ -32,6 +36,25 @@ async def _send_ws_update_async(task_id: str, status: str, progress: int = None,
     except Exception as e:
         # send_json_message 내부에서 로깅하지만, 여기서도 로깅 가능
         logger.error(f"[Task {task_id}] Failed to send WebSocket update ({status}): {e}")
+    
+    redis_client = get_redis_client()
+    if redis_client: # Redis 클라이언트가 정상적으로 초기화되었을 때만 실행
+        try:
+            redis_key = f"ws_messages:{task_id}"
+            message_json = json.dumps(message) # Dictionary를 JSON 문자열로 변환
+            # RPUSH: 리스트 오른쪽에 추가 (시간 순서대로 저장됨)
+            redis_client.rpush(redis_key, message_json)
+            # EXPIRE: 키에 만료 시간 설정 (초 단위)
+            redis_client.expire(redis_key, get_message_ttl())
+            logger.debug(f"Saved WS message to Redis list {redis_key}")
+        except json.JSONDecodeError as json_err:
+             logger.error(f"[Task {task_id}] Failed to serialize message to JSON: {json_err}", exc_info=True)
+        except redis.exceptions.RedisError as redis_err:
+            logger.error(f"[Task {task_id}] Failed to save WS message to Redis: {redis_err}", exc_info=True)
+        except Exception as e:
+            logger.error(f"[Task {task_id}] Unexpected error saving WS message to Redis: {e}", exc_info=True)
+    else:
+        logger.warning(f"[Task {task_id}] Redis client not available, skipping message save.")
 
 def send_ws_update(task_id: str, status: str, progress: int = None, data: Any = None, error: str = None):
     """동기 Celery 작업 내에서 WebSocket 업데이트를 보내기 위한 동기 래퍼"""
@@ -118,7 +141,7 @@ def process_audio_file(self, task_id: str, wav_file_path: str, language: str = "
                  chunk_durations_sec.append(len(chunk) / 1000.0)
                  # Celery 서브태스크 시그니처 생성
                  subtask_signatures.append(
-                     process_stt_chunk.s(task_id, str(chunk_path), language, i, len(chunks))
+                     process_stt_chunk(task_id, str(chunk_path), language, i, len(chunks))
                  )
             except Exception as e:
                  logger.error(f"[Task {task_id}] Failed to export chunk {i}: {e}")

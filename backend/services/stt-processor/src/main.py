@@ -1,3 +1,6 @@
+import json
+from .redis_client import get_redis_client # Redis 클라이언트 함수 임포트
+
 import logging
 import uuid # 고유 Task ID 생성용
 import asyncio
@@ -10,8 +13,9 @@ from typing import Dict, List, Any
 from .celery_app import celery_app
 from . import tasks
 
-# WebSocket Manager 임포트 (새 파일에서 가져옴)
-from .ws_manager import manager # <--- 변경된 부분
+from .ws_manager import manager
+
+from fastapi.middleware.cors import CORSMiddleware
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +26,21 @@ app = FastAPI(
     title="Asynchronous STT Processor Service",
     description="Transcribes audio files asynchronously using Celery and Faster-Whisper.",
     version="0.2.0"
+)
+
+# CORS 설정
+origins = [
+    "http://localhost",         # 로컬 개발 환경 (포트 없이)
+    "http://localhost:3000",    # 기본 React 개발 서버 포트
+    # 필요에 따라 실제 배포될 프론트엔드 주소 추가
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,           # 허용할 출처 목록
+    allow_credentials=True,          # 쿠키 포함 요청 허용 여부
+    allow_methods=["*"],             # 허용할 HTTP 메소드 (GET, POST 등)
+    allow_headers=["*"],             # 허용할 HTTP 헤더
 )
 
 # --- API 모델 정의 ---
@@ -54,10 +73,10 @@ async def request_transcription(request: TranscriptionRequest):
 
         # Celery 백그라운드 작업 등록 (delay() 메서드 사용)
         # Task ID를 작업 함수에 전달하여 WebSocket 통신에 사용
-        tasks.process_audio_file.delay(
-            task_id=task_id,
-            wav_file_path=request.wav_file_path,
-            language=request.language
+        tasks.process_audio_file.apply_async( # .delay() 대신 .apply_async() 사용
+            args=[task_id, request.wav_file_path, request.language], # 인자는 args로 전달
+            # kwargs={} # 키워드 인자가 있다면 kwargs로 전달
+            queue='priority_queue' # 작업 큐 이름 지정
         )
 
         # 클라이언트에게 반환할 URL 생성
@@ -77,20 +96,61 @@ async def request_transcription(request: TranscriptionRequest):
 @app.websocket("/ws/{task_id}")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
     """WebSocket endpoint for clients to receive real-time transcription updates."""
-    await manager.connect(websocket, task_id)
+    await manager.connect(websocket, task_id) # 클라이언트 연결 등록
+
+    redis_client = get_redis_client()
+    redis_key = f"ws_messages:{task_id}"
+    initial_send_failed = False # 이전 메시지 전송 중 오류 플래그
+
     try:
-        # 연결 유지 및 클라이언트 메시지 수신 (선택 사항)
-        while True:
-            # data = await websocket.receive_text() # 클라이언트로부터 메시지 받기 (예: 핑퐁)
-            # logger.debug(f"Received WS message from {task_id}: {data}")
-            # 서버 -> 클라이언트 메시지는 Celery Task에서 manager를 통해 전송됨
-            await asyncio.sleep(30) # 연결 유지를 위한 대기 (또는 PING 전송)
+        # 1. Redis에서 이전 메시지 가져와서 전송 (클라이언트 연결 직후)
+        if redis_client: # Redis 클라이언트가 사용 가능할 때만 시도
+            try:
+                logger.info(f"Retrieving past messages for {task_id} from Redis key {redis_key}")
+                # LRANGE key start stop: 리스트의 특정 범위 요소 가져오기 (0 -1 은 전체)
+                past_messages_json = redis_client.lrange(redis_key, 0, -1)
+
+                if past_messages_json:
+                    logger.info(f"Sending {len(past_messages_json)} past messages to client {task_id}")
+                    for msg_json in past_messages_json:
+                        try:
+                            msg_dict = json.loads(msg_json) # JSON 문자열을 Dictionary로 파싱
+                            await websocket.send_json(msg_dict) # 파싱된 메시지 전송
+                        except json.JSONDecodeError:
+                            logger.warning(f"Could not decode JSON message from Redis for {task_id}: {msg_json}")
+                        except WebSocketDisconnect: # 이전 메시지 보내는 중 연결 끊길 경우
+                             logger.warning(f"Client {task_id} disconnected while sending past messages.")
+                             initial_send_failed = True
+                             break # 루프 중단
+                        except Exception as send_err:
+                            logger.warning(f"Error sending past message to {task_id}: {send_err}")
+                            initial_send_failed = True
+                            break # 루프 중단 (연결 문제 가능성)
+                    if not initial_send_failed:
+                         logger.info(f"Finished sending past messages for {task_id}.")
+                else:
+                     logger.info(f"No past messages found in Redis for task {task_id}.")
+
+            except redis.exceptions.RedisError as redis_err:
+                logger.error(f"Failed to retrieve past messages for {task_id} from Redis: {redis_err}", exc_info=True)
+            except Exception as e:
+                 logger.error(f"Unexpected error retrieving past messages for {task_id}: {e}", exc_info=True)
+
+        # 2. 이후 실시간 메시지 수신 대기 (이전 메시지 전송 실패 시 대기 루프 진입 안 함)
+        if not initial_send_failed:
+            while True:
+                # WebSocket 연결 유지를 위해 주기적으로 sleep 또는 ping/pong 필요
+                # 클라이언트로부터 메시지를 받을 수도 있음 (여기서는 생략)
+                # await websocket.receive_text()
+                await asyncio.sleep(60) # 예: 60초마다 깨어나서 연결 상태 확인
+
     except WebSocketDisconnect:
         logger.info(f"WebSocket client for task {task_id} disconnected gracefully.")
     except Exception as e:
+        # WebSocket 연결 또는 유지 중 예상치 못한 오류 발생
         logger.error(f"WebSocket error for task {task_id}: {e}", exc_info=True)
     finally:
-        # 연결 종료 시 정리
+        # 클라이언트 연결 종료 시 항상 ConnectionManager에서 제거
         manager.disconnect(task_id)
 
 

@@ -6,6 +6,8 @@ from typing import Optional, Dict, Any
 
 from .extractor import YouTubeExtractor
 
+from fastapi.middleware.cors import CORSMiddleware
+
 # 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
@@ -15,6 +17,21 @@ logger = logging.getLogger(__name__)
 
 # FastAPI 앱 초기화
 app = FastAPI(title="YouTube Audio Extractor Service")
+
+# CORS 설정
+origins = [
+    "http://localhost",         # 로컬 개발 환경 (포트 없이)
+    "http://localhost:3000",    # 기본 React 개발 서버 포트
+    # 필요에 따라 실제 배포될 프론트엔드 주소 추가
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,           # 허용할 출처 목록
+    allow_credentials=True,          # 쿠키 포함 요청 허용 여부
+    allow_methods=["*"],             # 허용할 HTTP 메소드 (GET, POST 등)
+    allow_headers=["*"],             # 허용할 HTTP 헤더
+)
 
 # 입력 모델 정의
 class YouTubeExtractionRequest(BaseModel):

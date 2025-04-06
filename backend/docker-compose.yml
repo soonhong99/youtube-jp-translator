@@ -11,7 +11,7 @@ services:
       - redis_data:/data # 데이터 영속성 (선택 사항)
     restart: unless-stopped
 
-  # 기존 youtube-extractor 서비스 (변경 없음)
+  # 기존 youtube-extractor 서비스
   youtube-extractor:
     build: ./services/youtube-extractor
     container_name: youtube-extractor-service
@@ -75,7 +75,7 @@ services:
     # Celery 워커 실행 명령어
     # -A: Celery 앱 위치 지정, worker: 워커 모드, --loglevel: 로그 레벨
     # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
-    command: celery -A src.celery_app worker --loglevel=info -c 1
+    command: celery -A src.celery_app worker --loglevel=info -c 1 -Q priority_queue,celery
     # GPU 사용 및 확장성 필요 시 deploy 섹션 활용
     # deploy:
     #   replicas: 2 # 워커 컨테이너 2개 실행

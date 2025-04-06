@@ -11,6 +11,10 @@ WORKDIR /app
 
 # 3. Python 라이브러리 설치
 COPY requirements.txt .
+
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # GPU 사용 및 특정 PyTorch 버전 설치 시 명령어 수정 필요
 RUN pip install --no-cache-dir -r requirements.txt
 
