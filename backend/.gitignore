@@ -1,0 +1,89 @@
+# --- Python ---
+# Virtual Environments
+venv/
+.venv/
+env/
+*/env/
+*/venv/
+ENV/
+
+# Compiled Python files
+*.pyc
+__pycache__/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+wheels/
+*.spec
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+nosetests.xml
+coverage.xml
+
+# Type checker/Linter cache
+.mypy_cache/
+.pytype/
+.ruff_cache/
+
+# --- IDE / Editor ---
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*~
+
+# --- Operating System ---
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# --- Secrets / Configuration ---
+# Environment variables file - DO NOT COMMIT ACTUAL SECRETS
+.env
+# Instead, commit an example file if needed:
+# .env.example
+
+# Other potential secret files
+secrets.yaml
+*.prod.json
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Application Specific (User Project) ---
+# Temporary audio chunks created by tasks.py
+chunks_*/
+
+# Downloaded STT models (if large and downloaded at runtime/build time)
+# Adjust path based on your setup (e.g., Docker volume mount)
+/app/models/  # Or models/ if relative to .gitignore
+
+# Celery Beat schedule file
+celerybeat-schedule
+
+# Other temporary files if any
+tmp/
+*.tmp
+
+# --- Dependencies (covered by venv usually) ---
+pip-log.txt
+pip-delete-this-directory.txt

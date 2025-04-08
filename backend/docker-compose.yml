@@ -1,58 +1,121 @@
 version: '3.8'
 
 services:
+  # Zookeeper 추가 (Kafka 의존성)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.2 # 예시 버전, 최신 안정 버전 확인
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    restart: unless-stopped
+
+  # Kafka Broker 추가
+  kafka:
+    image: confluentinc/cp-kafka:7.3.2 # 예시 버전, Zookeeper와 버전 호환성 확인
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      # 외부에서 Kafka 직접 접속 시 필요 (개발/디버깅용)
+      # - "19092:19092"
+      - "9092:9092" # 컨테이너 간 통신용
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      # 중요: 컨테이너 외부에서 접속할 경우 advertised.listeners 설정 필요
+      # KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092 # 컨테이너 내부 통신용 설정
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT #,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # 필요한 경우 추가 Kafka 설정
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    restart: unless-stopped
+
+  # Redis 서비스 추가
+  redis:
+    image: redis:7-alpine # 특정 버전 사용 권장
+    container_name: redis-stt
+    ports:
+      - "127.0.0.1:6379:6379" # 로컬에서만 접근하도록 설정 (보안 강화)
+    volumes:
+      - redis_data:/data # 데이터 영속성 (선택 사항)
+    restart: unless-stopped
+
+  # 기존 youtube-extractor 서비스 (변경 없음)
   youtube-extractor:
-    build: ./services/youtube-extractor # youtube-extractor 서비스의 Dockerfile 경로
+    build: ./services/youtube-extractor
     container_name: youtube-extractor-service
     ports:
-      - "8000:8000" # 호스트 포트:컨테이너 포트
+      - "127.0.0.1:8000:8000" # 로컬에서만 접근
     volumes:
-      # 공유 볼륨 설정: 호스트 경로 또는 Docker 관리 볼륨 사용
-      # Docker 관리 볼륨 사용 예시:
-      - youtube_audio_data:/app/downloads # 볼륨 이름:컨테이너 내부 경로
-      # 호스트 경로 마운트 예시 (로컬에 audio_data 폴더 생성 필요):
-      # - ./audio_data:/app/downloads
+      - youtube_audio_data:/app/downloads
     environment:
-      # youtube-extractor 컨테이너 내부의 오디오 저장 경로 설정
       - OUTPUT_DIR=/app/downloads
-      # 필요한 다른 환경 변수 추가
     restart: unless-stopped
 
-  stt-processor:
+  # STT Processor API 서비스 (Celery 연동 설정 추가)
+  stt-processor-api:
     build:
-      context: ./services/stt-processor # stt-processor 서비스의 Dockerfile 경로
+      context: ./services/stt-processor
       args:
-        # Dockerfile 빌드 시 사용할 모델 크기 지정 (변경 가능)
-        MODEL_SIZE: base # 예: base, small, medium, large-v2
-    container_name: stt-processor-service
+        MODEL_SIZE: base # 빌드 시 모델 크기 지정
+    container_name: stt-processor-api
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001" # 로컬에서만 접근
     volumes:
-      # youtube-extractor와 동일한 볼륨을 마운트하여 WAV 파일 접근
-      - youtube_audio_data:/app/downloads # 볼륨 이름:컨테이너 내부 경로 (WAV 파일 읽는 경로)
-      # (옵션 2) 모델 파일을 호스트에 저장하고 마운트 (Dockerfile에서 다운로드 안 할 경우)
-      # - ./stt_models:/app/models # 호스트 경로:컨테이너 내부 모델 경로
-      - faster_whisper_models:/app/models # Docker 관리 볼륨 사용 예시
+      - youtube_audio_data:/app/downloads # 오디오 공유 볼륨
+      - faster_whisper_models:/app/models # 모델 볼륨
     environment:
-      # stt.py에서 사용할 환경 변수 설정
-      - MODEL_DIR=/app/models # 컨테이너 내부 모델 경로
-      - MODEL_SIZE=base       # 사용할 모델 크기 (Dockerfile ARG와 일치)
-      - DEVICE=cpu            # "cpu" 또는 "cuda"
-      - COMPUTE_TYPE=int8     # "int8", "float16" 등
-      # - PYTHONUNBUFFERED=1    # 로그 즉시 출력 (디버깅 시 유용)
-    # GPU 사용 시 nvidia runtime 설정 추가
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1 # 사용할 GPU 수
-    #           capabilities: [gpu]
+      - MODEL_DIR=/app/models
+      - MODEL_SIZE=base
+      - DEVICE=cpu
+      - COMPUTE_TYPE=int8
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092 # Kafka 서비스 이름:포트
+      - REDIS_HOST=redis # Redis는 히스토리 저장용으로 남겨둠 (아래 Redis 서비스 필요)
+      - REDIS_PORT=6379
+      - REDIS_DB_WS_MESSAGES=3
+      - PYTHONUNBUFFERED=1
+    depends_on: # Redis가 먼저 실행되어야 함
+      - redis
+      - kafka
     restart: unless-stopped
-    # depends_on: # 필요하다면 서비스 시작 순서 정의
-    #   - youtube-extractor
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8001 # --reload 옵션은 개발 시에만
 
-# Docker 관리 볼륨 정의
+  # STT Processor Celery Worker 서비스 추가
+  stt-processor-worker:
+    build:
+      context: ./services/stt-processor # API와 동일한 이미지 사용
+      args:
+        MODEL_SIZE: base
+    container_name: stt-processor-worker
+    # 워커는 외부 포트 노출 불필요
+    volumes: # API와 동일한 볼륨 마운트 필요
+      - youtube_audio_data:/app/downloads
+      - faster_whisper_models:/app/models
+    environment: # API와 동일한 환경 변수 + Worker 관련 설정
+      - MODEL_DIR=/app/models
+      - MODEL_SIZE=base
+      - DEVICE=cpu # 또는 cuda
+      - COMPUTE_TYPE=int8
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONUNBUFFERED=1
+      # - NVIDIA_VISIBLE_DEVICES=all # GPU 사용 시
+    depends_on:
+      - kafka
+      - stt-processor-api # API 실행 후 워커 시작 (선택 사항)
+    restart: unless-stopped
+    # Celery 워커 실행 명령어
+    # -A: Celery 앱 위치 지정, worker: 워커 모드, --loglevel: 로그 레벨
+    # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
+    command: python src/consumer.py
+# 볼륨 정의
 volumes:
-  youtube_audio_data: # 오디오 파일 공유용
-  faster_whisper_models: # Faster-Whisper 모델 저장용 (옵션)
+  kafka_data:
+  youtube_audio_data:
+  faster_whisper_models:
+  redis_data:
