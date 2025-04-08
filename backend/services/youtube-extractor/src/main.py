@@ -1,6 +1,7 @@
 import logging
 import os
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # CORS 미들웨어 임포트 추가
 from pydantic import BaseModel, HttpUrl
 from typing import Optional, Dict, Any
 
@@ -15,6 +16,22 @@ logger = logging.getLogger(__name__)
 
 # FastAPI 앱 초기화
 app = FastAPI(title="YouTube Audio Extractor Service")
+
+# --- CORS 미들웨어 설정 추가 ---
+origins = [
+    "http://localhost",
+    "http://localhost:3000", # React 앱 실행 주소
+    # 필요시 다른 허용할 출처 추가
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,       # 허용할 출처 목록
+    allow_credentials=True,      # 자격 증명(쿠키 등) 허용 여부
+    allow_methods=["*"],         # 모든 HTTP 메소드 허용 (GET, POST, OPTIONS 등)
+    allow_headers=["*"],         # 모든 HTTP 헤더 허용
+)
+# --- CORS 설정 끝 ---
 
 # 입력 모델 정의
 class YouTubeExtractionRequest(BaseModel):

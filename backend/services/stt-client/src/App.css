@@ -1,0 +1,86 @@
+/* src/App.css */
+.App {
+  font-family: sans-serif;
+  padding: 20px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+form {
+  display: flex;
+  margin-bottom: 20px;
+}
+
+input[type="url"] { /* type="text" 대신 "url" 사용 권장 */
+  flex-grow: 1;
+  padding: 10px;
+  margin-right: 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 1rem; /* 글꼴 크기 추가 */
+}
+
+button {
+  padding: 10px 15px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem; /* 글꼴 크기 추가 */
+  transition: background-color 0.2s;
+}
+
+button:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+button:hover:not(:disabled) {
+  background-color: #0056b3;
+}
+
+.status-area, .results-area {
+  margin-top: 20px;
+  padding: 15px;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  background-color: #f9f9f9;
+}
+
+.status-area h2, .results-area h2 {
+  margin-top: 0;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 10px;
+}
+
+#status-message {
+  font-weight: bold;
+  white-space: pre-wrap; /* 줄바꿈 표시 */
+  word-break: break-all; /* 긴 메시지 줄바꿈 */
+}
+
+.error-message {
+  color: red;
+  font-weight: bold;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.results-area p {
+  margin: 8px 0;
+  padding: 8px; /* 패딩 조정 */
+  border-bottom: 1px dotted #eee;
+  line-height: 1.5; /* 줄 간격 */
+}
+.results-area p:last-child {
+    border-bottom: none;
+}
+.results-area p span { /* 타임스탬프 스타일 */
+   display: inline-block; /* 줄바꿈 방지 및 간격 */
+   margin-right: 8px;
+   font-weight: bold;
+   color: #007bff;
+   font-size: 0.9em; /* 약간 작게 */
+   min-width: 120px; /* 너비 고정 시도 */
+}
