@@ -27,72 +27,27 @@
 ![Image](https://github.com/user-attachments/assets/030eb414-b3c7-4df5-9a5d-2c69f8ff573e)
 ```mermaid
 graph TD
-    subgraph "User Interaction"
-        User([👤 User]) -- "1. YouTube URL 입력" --> Frontend{"🖥️ React Frontend\n(stt-client)"};
-    end
+  User([User])
+  Frontend([React Frontend])
+  Extractor([Extractor API])
+  STTAPI([STT API])
+  STTWorker([STT Worker])
+  Kafka[(Kafka)]
+  Redis[(Redis)]
+  Volume[(Audio Volume)]
 
-    subgraph "Backend Services (Docker Containers)"
-        ExtractorAPI["📺 Extractor API\n:8000"];
-        SttAPI["🖥️ STT API\n:8001\n(Kafka P/C, WebSocket)"];
-        SttWorker["🧠 STT Worker\n(Kafka Consumer)"];
-        TranslateAPI["🌐 Translator API\n(Future)"];
-        TranslateWorker["🔄 Translator Worker\n(Future)"];
-    end
+  User --> Frontend
+  Frontend --> Extractor
+  Extractor --> Volume
+  Frontend --> STTAPI
+  STTAPI --> Kafka
+  Kafka --> STTWorker
+  STTWorker --> Volume
+  STTWorker --> Kafka
+  Kafka --> STTAPI
+  STTAPI --> Redis
+  STTAPI --> Frontend
 
-    subgraph "Infrastructure (Docker Containers)"
-        KafkaBroker["🔀 Kafka"];
-        Zookeeper["🔗 Zookeeper"];
-        RedisCache["🗃️ Redis\n(WS History)"];
-        AudioVolume["📂 Shared Volume\n(WAV Files)"];
-    end
-
-    subgraph "Kafka Topics"
-        direction LR
-        SttReqTopic(stt_requests);
-        SttResTopic(stt_results);
-        TransReqTopic(translation_requests);
-        TransResTopic(translation_results);
-    end
-
-    Frontend -- "2. POST /extract" --> ExtractorAPI;
-    ExtractorAPI -- "3. Download & Save WAV" --> AudioVolume;
-    ExtractorAPI -- "4. file_path" --> Frontend;
-
-    Frontend -- "5. POST /request_transcription" --> SttAPI;
-    SttAPI -- "6. Produce Task" --> KafkaBroker;
-    KafkaBroker -- "Kafka Msg" --> SttReqTopic;
-    SttAPI -- "7. task_id, ws_url" --> Frontend;
-    Frontend -- "8. WebSocket Connect" --> SttAPI;
-    SttAPI -- "9. Load History" --> RedisCache;
-    RedisCache -- "Past Msgs" --> SttAPI;
-    SttAPI -- "Send History" --> Frontend;
-
-    SttReqTopic -- "Kafka Msg" --> KafkaBroker;
-    KafkaBroker -- "10. Consume Task" --> SttWorker;
-    SttWorker -- "11. Read WAV" --> AudioVolume;
-    SttWorker -- "11. Split & STT" --> SttWorker;
-    SttWorker -- "12. Produce Results/Progress" --> KafkaBroker;
-    KafkaBroker -- "Kafka Msg" --> SttResTopic;
-
-    SttResTopic -- "Kafka Msg" --> KafkaBroker;
-    KafkaBroker -- "13. Consume Results" --> SttAPI;
-    SttAPI -- "14. Store History" --> RedisCache;
-    SttAPI -- "14. Push via WebSocket" --> Frontend;
-    Frontend -- "15. Display JP Segments" --> User;
-
-    SttWorker -- "16. Produce JP Text" --> KafkaBroker;
-    KafkaBroker -- "Kafka Msg" --> TransReqTopic;
-    TransReqTopic -- "Kafka Msg" --> KafkaBroker;
-    KafkaBroker -- "17. Consume JP Text" --> TranslateWorker;
-    TranslateWorker -- "18. JP -> KO Translation" --> TranslateWorker;
-    TranslateWorker -- "18. Produce KO Text" --> KafkaBroker;
-    KafkaBroker -- "Kafka Msg" --> TransResTopic;
-    TransResTopic -- "Kafka Msg" --> KafkaBroker;
-    KafkaBroker -- "19. Consume KO Text" --> TranslateAPI;
-    TranslateAPI -- "20. Push via WebSocket?" --> Frontend;
-    Frontend -- "21. Display KO Translation" --> User;
-
-    KafkaBroker --> Zookeeper;
 ```
 
 ### 시스템 흐름 설명:
