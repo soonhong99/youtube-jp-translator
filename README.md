@@ -24,7 +24,7 @@
 
 시스템 전체 흐름도:
 
-![Image](https://github.com/user-attachments/assets/85d3588b-9cb1-4945-a936-f82b22f2edd1)
+![Image](https://github.com/user-attachments/assets/030eb414-b3c7-4df5-9a5d-2c69f8ff573e)
 
 ### 주요 구성 요소:
 
