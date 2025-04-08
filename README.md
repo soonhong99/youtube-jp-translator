@@ -24,7 +24,7 @@
 
 시스템 전체 흐름도:
 
-[Image of 시스템 아키텍처 다이어그램](docs/system-architecture-diagram.svg)
+![Image](https://github.com/user-attachments/assets/85d3588b-9cb1-4945-a936-f82b22f2edd1)
 
 ### 주요 구성 요소:
 
