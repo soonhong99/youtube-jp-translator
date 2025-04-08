@@ -28,22 +28,22 @@
 ```mermaid
 graph TD
     subgraph "User Interaction"
-        User([<fa:fa-user /> User]) -- 1. YouTube URL 입력 --> Frontend{<fa:fa-window-maximize /> React Frontend (stt-client)};
+        User([👤 User]) -- "1. YouTube URL 입력" --> Frontend{"🖥️ React Frontend\n(stt-client)"};
     end
 
     subgraph "Backend Services (Docker Containers)"
-        ExtractorAPI[<fa:fa-youtube /> Extractor API<br/>:8000];
-        SttAPI[<fa:fa-server /> STT API<br/>:8001<br/>(Kafka P/C, WebSocket)];
-        SttWorker[<fa:fa-microchip /> STT Worker<br/>(Kafka Consumer)];
-        TranslateAPI[<fa:fa-language /> Translator API<br/>(Future)];
-        TranslateWorker[<fa:fa-sync /> Translator Worker<br/>(Future)];
+        ExtractorAPI["📺 Extractor API\n:8000"];
+        SttAPI["🖥️ STT API\n:8001\n(Kafka P/C, WebSocket)"];
+        SttWorker["🧠 STT Worker\n(Kafka Consumer)"];
+        TranslateAPI["🌐 Translator API\n(Future)"];
+        TranslateWorker["🔄 Translator Worker\n(Future)"];
     end
 
     subgraph "Infrastructure (Docker Containers)"
-        KafkaBroker[<fa:fa-random /> Kafka];
-        Zookeeper(((<fa:fa-link /> Zookeeper)));
-        RedisCache[<fa:fa-database /> Redis<br/>(WS History)];
-        AudioVolume[(<fa:fa-folder-open /> Shared Volume<br/>WAV Files)];
+        KafkaBroker["🔀 Kafka"];
+        Zookeeper["🔗 Zookeeper"];
+        RedisCache["🗃️ Redis\n(WS History)"];
+        AudioVolume["📂 Shared Volume\n(WAV Files)"];
     end
 
     subgraph "Kafka Topics"
@@ -54,57 +54,45 @@ graph TD
         TransResTopic(translation_results);
     end
 
-    %% --- 오디오 추출 단계 ---
-    Frontend -- 2. POST /extract --> ExtractorAPI;
-    ExtractorAPI -- 3. Download & Save WAV --> AudioVolume;
-    ExtractorAPI -- 4. file_path --> Frontend;
+    Frontend -- "2. POST /extract" --> ExtractorAPI;
+    ExtractorAPI -- "3. Download & Save WAV" --> AudioVolume;
+    ExtractorAPI -- "4. file_path" --> Frontend;
 
-    %% --- STT 요청 및 WebSocket 연결 단계 ---
-    Frontend -- 5. POST /request_transcription --> SttAPI;
-    SttAPI -- 6. Produce Task --> KafkaBroker;
-    KafkaBroker -- Kafka Msg --> SttReqTopic;
-    SttAPI -- 7. task_id, ws_url --> Frontend;
-    Frontend -- 8. WebSocket Connect --> SttAPI;
-    SttAPI -- 9. Load History --> RedisCache;
-    RedisCache -- Past Msgs --> SttAPI;
-    SttAPI -- Send History --> Frontend;
+    Frontend -- "5. POST /request_transcription" --> SttAPI;
+    SttAPI -- "6. Produce Task" --> KafkaBroker;
+    KafkaBroker -- "Kafka Msg" --> SttReqTopic;
+    SttAPI -- "7. task_id, ws_url" --> Frontend;
+    Frontend -- "8. WebSocket Connect" --> SttAPI;
+    SttAPI -- "9. Load History" --> RedisCache;
+    RedisCache -- "Past Msgs" --> SttAPI;
+    SttAPI -- "Send History" --> Frontend;
 
-    %% --- STT 처리 단계 (Worker) ---
-    SttReqTopic -- Kafka Msg --> KafkaBroker;
-    KafkaBroker -- 10. Consume Task --> SttWorker;
-    SttWorker -- 11. Read WAV --> AudioVolume;
-    SttWorker -- 11. Split & STT --> SttWorker;
-    SttWorker -- 12. Produce Results/Progress --> KafkaBroker;
-    KafkaBroker -- Kafka Msg --> SttResTopic;
+    SttReqTopic -- "Kafka Msg" --> KafkaBroker;
+    KafkaBroker -- "10. Consume Task" --> SttWorker;
+    SttWorker -- "11. Read WAV" --> AudioVolume;
+    SttWorker -- "11. Split & STT" --> SttWorker;
+    SttWorker -- "12. Produce Results/Progress" --> KafkaBroker;
+    KafkaBroker -- "Kafka Msg" --> SttResTopic;
 
-    %% --- STT 결과 전달 단계 (API) ---
-    SttResTopic -- Kafka Msg --> KafkaBroker;
-    KafkaBroker -- 13. Consume Results --> SttAPI;
-    SttAPI -- 14. Store History --> RedisCache;
-    SttAPI -- 14. Push via WebSocket --> Frontend;
-    Frontend -- 15. Display JP Segments --> User;
+    SttResTopic -- "Kafka Msg" --> KafkaBroker;
+    KafkaBroker -- "13. Consume Results" --> SttAPI;
+    SttAPI -- "14. Store History" --> RedisCache;
+    SttAPI -- "14. Push via WebSocket" --> Frontend;
+    Frontend -- "15. Display JP Segments" --> User;
 
-    %% --- 번역 단계 (향후 추가) ---
-    %% 예시: STT 완료 후 워커가 번역 요청 시작
-    SttWorker -- 16. Produce JP Text --> KafkaBroker;
-    KafkaBroker -- Kafka Msg --> TransReqTopic;
-    TransReqTopic -- Kafka Msg --> KafkaBroker;
-    KafkaBroker -- 17. Consume JP Text --> TranslateWorker;
-    TranslateWorker -- 18. JP -> KO Translation --> TranslateWorker;
-    TranslateWorker -- 18. Produce KO Text --> KafkaBroker;
-    KafkaBroker -- Kafka Msg --> TransResTopic;
-    TransResTopic -- Kafka Msg --> KafkaBroker;
-    %% 예시: 별도 번역 API가 결과를 받아 처리
-    KafkaBroker -- 19. Consume KO Text --> TranslateAPI;
-    TranslateAPI -- 20. Push via WebSocket? --> Frontend;  // 또는 다른 방식으로 전달
-    Frontend -- 21. Display KO Translation --> User;
+    SttWorker -- "16. Produce JP Text" --> KafkaBroker;
+    KafkaBroker -- "Kafka Msg" --> TransReqTopic;
+    TransReqTopic -- "Kafka Msg" --> KafkaBroker;
+    KafkaBroker -- "17. Consume JP Text" --> TranslateWorker;
+    TranslateWorker -- "18. JP -> KO Translation" --> TranslateWorker;
+    TranslateWorker -- "18. Produce KO Text" --> KafkaBroker;
+    KafkaBroker -- "Kafka Msg" --> TransResTopic;
+    TransResTopic -- "Kafka Msg" --> KafkaBroker;
+    KafkaBroker -- "19. Consume KO Text" --> TranslateAPI;
+    TranslateAPI -- "20. Push via WebSocket?" --> Frontend;
+    Frontend -- "21. Display KO Translation" --> User;
 
-    %% --- 의존성 ---
     KafkaBroker --> Zookeeper;
-
-    %% --- 스타일 (선택적) ---
-    style User fill:#DDF,stroke:#333
-    style Frontend fill:#CDF,stroke:#333
 ```
 
 ### 시스템 흐름 설명:
