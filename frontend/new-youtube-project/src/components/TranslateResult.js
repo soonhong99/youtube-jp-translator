@@ -33,7 +33,7 @@ function TranslateResult() {
                 <div style={{ marginTop: '20px' }}>
 
                     <button
-                        onClick={() => navigate('/download')}
+                        onClick={() => navigate('/download', { state: { script } })}
                         style={{
                             backgroundColor: '#28a745',
                             color: 'white',

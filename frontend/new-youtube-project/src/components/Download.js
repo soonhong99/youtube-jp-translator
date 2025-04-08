@@ -1,23 +1,12 @@
-import React, { useEffect, useState } from 'react';
-import axios from 'axios';
-
+import React from 'react';
+import { useLocation } from 'react-router-dom';
 
 export default function Download() {
-  const [script, setScript] = useState([]);
-
-  useEffect(() => {
-    // 백엔드에서 스크립트 불러오기
-    axios.get('http://localhost:5000/api/full-script')  // <- URL은 실제 API 경로에 맞게!
-      .then(response => {
-        setScript(response.data);
-      })
-      .catch(error => {
-        console.error('스크립트 불러오기 실패:', error);
-      });
-  }, []);
+  const location = useLocation();
+  const script = location.state?.script || [];
 
   const downloadScript = (language) => {
-    let text = script.map(line => line[language]).join('\n');
+    const text = script.map(line => line[language]).join('\n');
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
