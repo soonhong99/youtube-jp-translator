@@ -24,42 +24,7 @@
 
 시스템 전체 흐름도:
 
-```mermaid
-graph TD
-    A[Browser / React Client] -- 1. POST /extract URL --> B(Youtube Extractor)
-    B -- 2. Response File Path --> A
-    A -- 3. POST /request_transcription File Path --> C(STT API)
-    C -- 4. Produce Request --> K_REQ[Kafka Topic: stt_requests]
-    C -- 5. Response Task ID --> A
-    D(STT Worker) -- 6. Consume Request --> K_REQ
-    A -- 7. Connect WebSocket --> C
-    D -- 8. Process STT Chunks --> D
-    D -- 9. Produce Results/Progress --> K_RES[Kafka Topic: stt_results]
-    E[API BG Consumer] -- 10. Consume Results --> K_RES
-    
-    subgraph "STT API Service"
-        C
-        E
-        F[WebSocket Manager]
-        G[Redis History]
-    end
-    
-    E -- 11. Forward to WS --> F
-    F -- 12. Push to Client --> A
-    E -- 13. Save to History --> G
-    
-    subgraph "Client Connection"
-      A --- F
-    end
-    
-    subgraph "History Retrieval"
-       C -.-> G
-       G -.-> F
-    end
-
-    style K_REQ fill:#f9f,stroke:#333,stroke-width:2px
-    style K_RES fill:#f9f,stroke:#333,stroke-width:2px
-```
+[Image of 시스템 아키텍처 다이어그램](docs/system-architecture-diagram.svg)
 
 ### 주요 구성 요소:
 
@@ -133,6 +98,9 @@ cd backend
 
 # Docker 이미지 빌드 (최초 실행 시 또는 변경사항 있을 때)
 docker-compose build
+
+# 주의사항: docker desktop을 끄거나 서버를 껐을 경우, 해당 명령어를 필수적으로 입력해주십시오. (웹소켓 꼬임 현상, 향후 해결 필요)
+docker-compose down -v
 
 # 모든 백엔드 서비스 시작
 docker-compose up -d
