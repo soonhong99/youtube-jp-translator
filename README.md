@@ -25,6 +25,108 @@
 시스템 전체 흐름도:
 
 ![Image](https://github.com/user-attachments/assets/030eb414-b3c7-4df5-9a5d-2c69f8ff573e)
+```mermaid
+graph TD
+    subgraph "User Interaction"
+        User([<fa:fa-user /> User]) -- 1. YouTube URL 입력 --> Frontend{<fa:fa-window-maximize /> React Frontend (stt-client)};
+    end
+
+    subgraph "Backend Services (Docker Containers)"
+        ExtractorAPI[<fa:fa-youtube /> Extractor API<br/>:8000];
+        SttAPI[<fa:fa-server /> STT API<br/>:8001<br/>(Kafka P/C, WebSocket)];
+        SttWorker[<fa:fa-microchip /> STT Worker<br/>(Kafka Consumer)];
+        TranslateAPI[<fa:fa-language /> Translator API<br/>(Future)];
+        TranslateWorker[<fa:fa-sync /> Translator Worker<br/>(Future)];
+    end
+
+    subgraph "Infrastructure (Docker Containers)"
+        KafkaBroker[<fa:fa-random /> Kafka];
+        Zookeeper(((<fa:fa-link /> Zookeeper)));
+        RedisCache[<fa:fa-database /> Redis<br/>(WS History)];
+        AudioVolume[(<fa:fa-folder-open /> Shared Volume<br/>WAV Files)];
+    end
+
+    subgraph "Kafka Topics"
+        direction LR
+        SttReqTopic(stt_requests);
+        SttResTopic(stt_results);
+        TransReqTopic(translation_requests);
+        TransResTopic(translation_results);
+    end
+
+    %% --- 오디오 추출 단계 ---
+    Frontend -- 2. POST /extract --> ExtractorAPI;
+    ExtractorAPI -- 3. Download & Save WAV --> AudioVolume;
+    ExtractorAPI -- 4. file_path --> Frontend;
+
+    %% --- STT 요청 및 WebSocket 연결 단계 ---
+    Frontend -- 5. POST /request_transcription --> SttAPI;
+    SttAPI -- 6. Produce Task --> KafkaBroker;
+    KafkaBroker -- Kafka Msg --> SttReqTopic;
+    SttAPI -- 7. task_id, ws_url --> Frontend;
+    Frontend -- 8. WebSocket Connect --> SttAPI;
+    SttAPI -- 9. Load History --> RedisCache;
+    RedisCache -- Past Msgs --> SttAPI;
+    SttAPI -- Send History --> Frontend;
+
+    %% --- STT 처리 단계 (Worker) ---
+    SttReqTopic -- Kafka Msg --> KafkaBroker;
+    KafkaBroker -- 10. Consume Task --> SttWorker;
+    SttWorker -- 11. Read WAV --> AudioVolume;
+    SttWorker -- 11. Split & STT --> SttWorker;
+    SttWorker -- 12. Produce Results/Progress --> KafkaBroker;
+    KafkaBroker -- Kafka Msg --> SttResTopic;
+
+    %% --- STT 결과 전달 단계 (API) ---
+    SttResTopic -- Kafka Msg --> KafkaBroker;
+    KafkaBroker -- 13. Consume Results --> SttAPI;
+    SttAPI -- 14. Store History --> RedisCache;
+    SttAPI -- 14. Push via WebSocket --> Frontend;
+    Frontend -- 15. Display JP Segments --> User;
+
+    %% --- 번역 단계 (향후 추가) ---
+    %% 예시: STT 완료 후 워커가 번역 요청 시작
+    SttWorker -- 16. Produce JP Text --> KafkaBroker;
+    KafkaBroker -- Kafka Msg --> TransReqTopic;
+    TransReqTopic -- Kafka Msg --> KafkaBroker;
+    KafkaBroker -- 17. Consume JP Text --> TranslateWorker;
+    TranslateWorker -- 18. JP -> KO Translation --> TranslateWorker;
+    TranslateWorker -- 18. Produce KO Text --> KafkaBroker;
+    KafkaBroker -- Kafka Msg --> TransResTopic;
+    TransResTopic -- Kafka Msg --> KafkaBroker;
+    %% 예시: 별도 번역 API가 결과를 받아 처리
+    KafkaBroker -- 19. Consume KO Text --> TranslateAPI;
+    TranslateAPI -- 20. Push via WebSocket? --> Frontend;  // 또는 다른 방식으로 전달
+    Frontend -- 21. Display KO Translation --> User;
+
+    %% --- 의존성 ---
+    KafkaBroker --> Zookeeper;
+
+    %% --- 스타일 (선택적) ---
+    style User fill:#DDF,stroke:#333
+    style Frontend fill:#CDF,stroke:#333
+```
+
+### 시스템 흐름 설명:
+
+1. **사용자 요청 및 오디오 추출**:
+   - 사용자가 YouTube URL을 입력하면 리액트 클라이언트가 유튜브 추출기 서비스로 요청 전송
+   - 추출기 서비스는 해당 영상에서 오디오를 추출하여 WAV 파일로 저장하고 파일 경로 반환
+
+2. **STT 작업 처리**:
+   - 클라이언트는 추출된 오디오 파일 경로로 STT API에 작업 요청
+   - STT API는 고유 작업 ID를 생성하고 Kafka의 `stt_requests` 토픽에 작업 발행
+   - STT producer는 Kafka에서 작업을 받아 오디오를 청크 단위로 분할하고 STT 처리
+
+3. **실시간 결과 전송**:
+   - producer는 처리 진행률과 결과를 Kafka의 `stt_results` 토픽에 발행
+   - API 서비스의 백그라운드 consumer가 결과를 수신하여 웹소켓을 통해 클라이언트로 전송
+   - 동시에 Redis에 메시지 히스토리 저장 (늦은 접속 클라이언트 지원)
+
+4. **향후 번역 기능 (예정)**:
+   - STT 처리된 일본어 텍스트는 번역 서비스로 전달
+   - 번역 서비스는 Seldon Core로 구축된 번역 모델에 요청하여 한국어로 변환
+   - 번역 결과는 Kafka를 통해 웹소켓 관리자로 전달되어 클라이언트에게 실시간 제공
 
 ### 주요 구성 요소:
 
