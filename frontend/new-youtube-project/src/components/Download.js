@@ -1,16 +1,23 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+
 
 export default function Download() {
-  const exampleScript = [
-    // 예시 데이터 (나중에 실제 API 연결 시 대체할 예정)
-    { jp: "おはようございます。", kr: "안녕하세요." },
-    { jp: "今日は東京に来ています。", kr: "오늘은 도쿄에 와 있습니다." },
-    { jp: "朝ごはんは近くのカフェです。", kr: "아침밥은 근처 카페입니다." },
-    { jp: "美味しそうなトーストがあります。", kr: "맛있어 보이는 토스트가 있어요." }
-  ];
+  const [script, setScript] = useState([]);
+
+  useEffect(() => {
+    // 백엔드에서 스크립트 불러오기
+    axios.get('http://localhost:5000/api/full-script')  // <- URL은 실제 API 경로에 맞게!
+      .then(response => {
+        setScript(response.data);
+      })
+      .catch(error => {
+        console.error('스크립트 불러오기 실패:', error);
+      });
+  }, []);
 
   const downloadScript = (language) => {
-    let text = exampleScript.map(line => line[language]).join('\n');
+    let text = script.map(line => line[language]).join('\n');
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -32,7 +39,7 @@ export default function Download() {
 
       <div style={{ marginTop: '30px' }}>
         <h3>전체 스크립트 보기:</h3>
-        {exampleScript.map((line, index) => (
+        {script.map((line, index) => (
           <div key={index} style={styles.line}>
             <p><strong>🇯🇵:</strong> {line.jp}</p>
             <p><strong>🇰🇷:</strong> {line.kr}</p>

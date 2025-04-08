@@ -1,16 +1,28 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
 
 
 function Home() {
   const [url, setUrl] = useState('');
   const navigate = useNavigate();
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    alert(`입력된 URL: ${url}`);
-    // 나중에 실제 URL 처리 로직 추가할 자리
-    navigate('/translate'); // 'translate' 페이지로 이동.
+
+    try {
+      //  1. 백엔드로 POST 요청 보내기
+      const response = await axios.post("http://localhost:8000/generate-script", {
+        url: url
+      }); // http://~ 서버 api 주소
+
+      //  2. 결과 데이터를 translate 페이지로 넘기기
+      navigate('/translate', { state: { scriptData: response.data, videoUrl: url } });//response.data 백엔드로부터 받은 데이터, 백엔드에서 data에 대한 정의 있어야 함.
+
+    } catch (error) {
+      console.error("❌ 백엔드 요청 실패:", error);
+      alert("서버에 연결할 수 없습니다. 백엔드가 켜져 있는지 확인해주세요.");
+    }
   };
 
   return (
