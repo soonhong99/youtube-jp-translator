@@ -26,28 +26,33 @@
 
 ![Image](https://github.com/user-attachments/assets/030eb414-b3c7-4df5-9a5d-2c69f8ff573e)
 ```mermaid
-graph TD
-  User([User])
-  Frontend([React Frontend])
-  Extractor([Extractor API])
-  STTAPI([STT API])
-  STTWorker([STT Worker])
-  Kafka[(Kafka)]
-  Redis[(Redis)]
-  Volume[(Audio Volume)]
+flowchart TD
+    User["User"] -- "1. URL 입력" --> Frontend["React Frontend :3000"]
 
-  User --> Frontend
-  Frontend --> Extractor
-  Extractor --> Volume
-  Frontend --> STTAPI
-  STTAPI --> Kafka
-  Kafka --> STTWorker
-  STTWorker --> Volume
-  STTWorker --> Kafka
-  Kafka --> STTAPI
-  STTAPI --> Redis
-  STTAPI --> Frontend
+    Frontend -->|"2. 오디오 추출 요청"| Extractor["Extractor API :8000"]
+    Extractor -->|"3. WAV 저장"| Volume[("Audio Volume")]
+    Extractor -->|"4. 파일 경로 응답"| Frontend
 
+    Frontend -->|"5. STT 요청"| STTAPI["STT API :8001"]
+    STTAPI -->|"6. Kafka 요청 발행"| KafkaRequests[("Kafka: stt_requests")]
+    STTAPI -->|"7. 작업 ID & WS URL 응답"| Frontend
+
+    Frontend -->|"8. WebSocket 연결"| STTAPI_WS[("STT API WS Endpoint")]
+
+    KafkaRequests -->|"10. 작업 메시지 수신"| STTWorker["STT Worker"]
+    Volume -->|"11. WAV 파일 읽기"| STTWorker
+    STTWorker -->|"12. STT 처리 & 결과 발행"| KafkaResults[("Kafka: stt_results")]
+
+    KafkaResults -->|"13. 결과 메시지 수신"| STTAPI_Consume[("STT API BG Consumer")]
+
+    subgraph "실시간 업데이트 및 히스토리"
+        STTAPI_Consume -->|"14. Redis에 결과 저장"| Redis[("Redis: History")]
+        STTAPI_Consume -->|"15. WebSocket으로 전달"| STTAPI_WS
+        Redis -->|"9. 과거 메시지 조회"| STTAPI_WS
+    end
+
+    STTAPI_WS -->|"9, 15. 상태/결과 전송"| Frontend
+    Frontend -->|"16. 결과 표시"| User
 ```
 
 ### 시스템 흐름 설명:
