@@ -9,7 +9,7 @@ function UrlInput({ redirectOnSubmit = false, onSubmit, isLoading }) {
     e.preventDefault();
     if (!url || isLoading) return;
     if (onSubmit) onSubmit(url);
-    if (redirectOnSubmit) navigate('/translate');
+    if (redirectOnSubmit) navigate('/translate', { state: { youtubeUrl: url } });
   };
 
   return (

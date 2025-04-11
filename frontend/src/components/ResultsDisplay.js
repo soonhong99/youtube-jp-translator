@@ -1,6 +1,7 @@
+// components/ResultsDisplay.js
 import React from 'react';
 
-const ResultsDisplay = ({ segments }) => {
+const ResultsDisplay = ({ segments, activeRef }) => {
   return (
     <div className="space-y-2">
       {segments.length === 0 ? (
@@ -10,7 +11,7 @@ const ResultsDisplay = ({ segments }) => {
           <div
             id={`segment-${seg.start}`}
             key={i}
-            className="p-3 rounded-md hover:bg-blue-50 transition border border-gray-200"
+            className={`p-3 rounded-md transition border border-gray-200 ${activeRef === seg.start ? 'bg-blue-100 font-bold' : 'hover:bg-blue-50'}`}
           >
             <p className="text-sm text-blue-600 font-mono mb-1">
               [{seg.start.toFixed(2)}s - {seg.end.toFixed(2)}s]
