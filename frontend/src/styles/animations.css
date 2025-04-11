@@ -1,3 +1,31 @@
+/* styles/animations.css */
+
+@keyframes glowHighlight {
+  0% {
+    box-shadow: 0 0 8px rgba(255, 255, 0, 0.2);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(255, 255, 0, 0.8);
+    transform: scale(1.02);
+  }
+  100% {
+    box-shadow: 0 0 8px rgba(255, 255, 0, 0.2);
+    transform: scale(1);
+  }
+}
+
+.highlight-segment {
+  background-color: #fef08a; /* Tailwind: yellow-200 */
+  font-weight: 700;
+  color: #1f2937; /* Tailwind: gray-800 */
+  border: 2px solid #facc15; /* Tailwind: yellow-400 */
+  animation: glowHighlight 1.2s ease-in-out infinite;
+  transition: all 0.3s ease;
+}
+
+
+
 @keyframes fadeIn {
     from {
       opacity: 0;
