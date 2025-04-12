@@ -13,7 +13,7 @@ function UrlInput({ redirectOnSubmit = false, onSubmit, isLoading }) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col md:flex-row w-full max-w-2xl gap-4">
+    <form onSubmit={handleSubmit} className="flex flex-col md:flex-row w-full max-w-3xl gap-4">
       <input
         type="url"
         value={url}
@@ -21,8 +21,11 @@ function UrlInput({ redirectOnSubmit = false, onSubmit, isLoading }) {
         placeholder="YouTube URL을 입력하세요"
         required
         disabled={isLoading}
-        className="flex-1 px-4 py-3 rounded-md border border-gray-300 shadow focus:outline-none focus:ring-2 focus:ring-blue-400"
+        className="flex-1 px-4 py-3 rounded-md border border-blue-300 shadow focus:outline-none 
+             focus:ring-2 focus:ring-blue-400 bg-white text-gray-800 placeholder-gray-400"
       />
+
+
       <button
         type="submit"
         disabled={isLoading}
