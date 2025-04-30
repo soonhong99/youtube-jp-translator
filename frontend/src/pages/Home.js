@@ -1,4 +1,3 @@
-
 import React from 'react';
 import UrlInput from '../components/UrlInput';
 import '../styles/animations.css';

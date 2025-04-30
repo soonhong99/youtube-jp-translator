@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import StatusBar from '../components/StatusBar';
@@ -105,6 +104,7 @@ const TranslateResult = () => {
       <div className="flex flex-col md:flex-row gap-8">
         {/* 🎥 영상 + 상태 */}
         <div className="flex-1 space-y-4">
+
           {videoUrl ? (
             <ReactPlayer
               ref={playerRef}
@@ -126,6 +126,7 @@ const TranslateResult = () => {
 
         {/* 📜 자막 영역 */}
         <div className="flex-1 h-[360px] overflow-y-auto bg-gray-800 rounded-lg p-4 shadow-inner">
+
           {segments.length === 0 && loading ? (
             <div className="h-full flex flex-col items-center justify-center">
               <div className="w-8 h-8 border-4 border-white border-t-transparent rounded-full animate-spin" />
@@ -159,4 +160,6 @@ const TranslateResult = () => {
   );
 };
 
+
 export default TranslateResult;
+
