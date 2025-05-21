@@ -13,7 +13,13 @@ import threading
 # Kafka Producer/Consumer 설정
 from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import KafkaError
-from .kafka_config import KAFKA_BOOTSTRAP_SERVERS, STT_REQUEST_TOPIC, STT_RESULT_TOPIC
+from .kafka_config import (
+    KAFKA_BOOTSTRAP_SERVERS, 
+    STT_REQUEST_TOPIC, 
+    STT_RESULT_TOPIC,
+    TRANSLATION_REQUESTS_TOPIC, # New import
+    TRANSLATION_RESULTS_TOPIC   # New import
+)
 
 # WebSocket Manager 및 Redis Client (메시지 히스토리용)
 from .ws_manager import manager
@@ -76,9 +82,22 @@ class TranscriptionResponse(BaseModel):
     # status_url: str = Field(..., description="Relative URL to poll for task status.")
 
 # 전역 변수 (Consumer 스레드 및 종료 이벤트)
+# For STT results
 consumer_thread = None
 stop_consumer_event = threading.Event()
 consumer = None # Consumer 객체를 전역 또는 클래스 멤버로 관리
+
+# For Translation results
+translation_consumer_thread = None
+stop_translation_consumer_event = threading.Event()
+translation_consumer = None
+
+# In-memory store for consolidating Japanese transcripts before sending for translation
+# This is a simple approach. For production, consider Redis or another persistent store
+# if the API restarts frequently or if transcripts are very large.
+# Key: task_id, Value: list of Japanese text segments
+task_stt_segments: Dict[str, List[str]] = {}
+
 
 # --- 백그라운드 Consumer 루프 함수 ---
 # (이 함수는 스레드에서 실행되므로 동기 함수로 정의)
@@ -92,144 +111,304 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
     logger.info("Kafka Consumer thread started. Waiting for messages from topic '{}'...".format(STT_RESULT_TOPIC))
 
     try:
-        # 동기 Consumer 루프
-        for message in consumer:
-            # 앱 종료 신호 확인
+        for message in consumer: # consumer_timeout_ms in consumer init makes this non-blocking if no messages
             if stop_consumer_event.is_set():
-                logger.info("Stop event received, exiting consumer loop.")
+                logger.info("Stop event received, exiting STT result consumer loop.")
                 break
+            
+            if message is None: # Handle case where poll times out
+                continue
 
-            # --- 테스트용 로그 ---
-            logger.info(f"!!!!!!!!!! [Thread] Message Received from Kafka: {message.topic}/{message.partition}/{message.offset}: key={message.key} !!!!!!!!!!")
+            logger.info(f"[STT Consumer Thread] Message Received: {message.topic}/{message.partition}/{message.offset}: key={message.key}")
 
             try:
-                result_data = message.value # value_deserializer가 이미 dict로 변환했을 것
-                logger.debug(f"[Thread] Message Value (raw): {result_data}")
+                result_data = message.value
                 task_id = result_data.get('task_id')
+                status = result_data.get('status')
+                data_segments = result_data.get('data') # This should be a list of segment dicts
 
-                if task_id:
-                    logger.info(f"[Thread] Received result/update for task {task_id}, Status: {result_data.get('status')}")
+                if not task_id:
+                    logger.warning(f"[STT Consumer Thread] Received message without task_id: {result_data}")
+                    continue
 
-                    # 1. WebSocket으로 실시간 전송 (메인 루프 사용)
-                    if main_loop and main_loop.is_running():
-                        logger.debug(f"[Thread] Scheduling WS send for task {task_id} on main loop...")
-                        # _send_ws_update_async 코루틴을 메인 루프에서 실행하도록 예약
-                        future = asyncio.run_coroutine_threadsafe(
-                            _send_ws_update_async( # 이 함수는 async def 여야 함
-                                task_id,
-                                result_data.get("status", "UNKNOWN"),
-                                result_data.get("progress"),
-                                result_data.get("data"),
-                                result_data.get("error")
-                            ),
-                            main_loop # 전달받은 메인 루프 사용
-                        )
-                        # 선택 사항: 전송 결과 확인 (블로킹 주의)
-                        # try:
-                        #     future.result(timeout=5) # 예: 5초 타임아웃
-                        #     logger.debug(f"[Thread] WS send scheduled successfully for task {task_id}.")
-                        # except TimeoutError:
-                        #      logger.warning(f"[Thread] Timeout waiting for WS send result for task {task_id}.")
-                        # except Exception as e:
-                        #      logger.error(f"[Thread] Exception during WS send scheduling/execution for task {task_id}: {e}")
+                logger.info(f"[STT Consumer Thread] Task {task_id}, Status: {status}")
 
+                # --- Accumulate STT segments ---
+                if status == "PROCESSING" and data_segments and isinstance(data_segments, list):
+                    if task_id not in task_stt_segments:
+                        task_stt_segments[task_id] = []
+                    for segment in data_segments:
+                        if isinstance(segment, dict) and 'text' in segment:
+                            task_stt_segments[task_id].append(segment['text'])
+                    logger.debug(f"[STT Consumer Thread] Appended {len(data_segments)} segments for task {task_id}. Total segments now: {len(task_stt_segments[task_id])}")
+
+                # --- Handle STT Completion ---
+                if status == "COMPLETED":
+                    logger.info(f"[STT Consumer Thread] Task {task_id} COMPLETED. Consolidating transcript.")
+                    full_japanese_transcript = ""
+                    if task_id in task_stt_segments:
+                        full_japanese_transcript = " ".join(task_stt_segments[task_id])
+                        logger.info(f"[STT Consumer Thread] Consolidated transcript for task {task_id}: '{full_japanese_transcript[:200]}...'")
+                        del task_stt_segments[task_id] # Clean up memory
                     else:
-                         logger.warning(f"[Thread] Main event loop not running or not available for task {task_id}. Skipping WS send.")
+                        # Fallback: Check Redis history if in-memory store is empty (e.g. after API restart)
+                        # This part assumes Redis stores STT segments in a way that can be reconstructed.
+                        # The current Redis usage (rpush of full ws_messages) makes this complex.
+                        # For simplicity, we'll rely on in-memory accumulation for now.
+                        # If worker sends full transcript with "COMPLETED", this would be simpler.
+                        logger.warning(f"[STT Consumer Thread] Task {task_id} COMPLETED, but no in-memory segments found. Attempting Redis fallback (if implemented).")
+                        # --- Attempt to reconstruct from Redis (if needed and Redis stores segments appropriately) ---
+                        # This is a simplified placeholder. Actual Redis structure for segments would be needed.
+                        # if redis_client:
+                        #     redis_key = f"ws_messages:{task_id}" # This key stores full WS messages, not just segments
+                        #     past_messages_json = redis_client.lrange(redis_key, 0, -1)
+                        #     temp_segments = []
+                        #     for msg_json_str in past_messages_json:
+                        #         msg_content = json.loads(msg_json_str)
+                        #         if msg_content.get("status") == "PROCESSING" and msg_content.get("data"):
+                        #             for seg in msg_content["data"]:
+                        #                 if isinstance(seg, dict) and "text" in seg:
+                        #                     temp_segments.append(seg["text"])
+                        #     if temp_segments:
+                        #         full_japanese_transcript = " ".join(temp_segments)
+                        #         logger.info(f"[STT Consumer Thread] Reconstructed transcript from Redis for task {task_id}: '{full_japanese_transcript[:100]}...'")
 
-                    # 2. Redis에 메시지 히스토리 저장 (동기 작업)
-                    if redis_client:
+
+                    if full_japanese_transcript and producer:
+                        translation_request_message = {
+                            "task_id": task_id,
+                            "japanese_text": full_japanese_transcript
+                        }
                         try:
-                            redis_key = f"ws_messages:{task_id}"
-                            message_json = json.dumps(result_data)
-                            redis_client.rpush(redis_key, message_json)
-                            # TTL은 매번 설정해도 되지만, 처음 또는 주기적으로 설정하는 것이 더 효율적일 수 있음
-                            redis_client.expire(redis_key, get_message_ttl())
-                            logger.debug(f"[Thread] Saved WS message to Redis list {redis_key}")
+                            producer.send(TRANSLATION_REQUESTS_TOPIC, key=task_id, value=translation_request_message)
+                            producer.flush() # Ensure message is sent
+                            logger.info(f"[STT Consumer Thread] Sent full transcript for task {task_id} to topic '{TRANSLATION_REQUESTS_TOPIC}'.")
+                        except KafkaError as e:
+                            logger.error(f"[STT Consumer Thread] Failed to send translation request for task {task_id} to Kafka: {e}", exc_info=True)
                         except Exception as e:
-                            logger.error(f"[Thread] Failed to save message to Redis for {task_id}: {e}", exc_info=True)
-                else:
-                    logger.warning(f"[Thread] Received message without task_id: {result_data}")
+                            logger.error(f"[STT Consumer Thread] Unexpected error sending translation request for task {task_id}: {e}", exc_info=True)
+                    elif not full_japanese_transcript:
+                        logger.warning(f"[STT Consumer Thread] Task {task_id} COMPLETED, but no transcript was consolidated. Translation request not sent.")
+                    elif not producer:
+                        logger.error(f"[STT Consumer Thread] Kafka producer not available. Cannot send translation request for task {task_id}.")
+
+
+                # --- WebSocket Update & Redis History ---
+                if main_loop and main_loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(
+                        _send_ws_update_async(
+                            task_id,
+                            status,
+                            result_data.get("progress"),
+                            data_segments, # Send original segments for STT display
+                            result_data.get("error")
+                        ),
+                        main_loop
+                    )
+                    # Optionally handle future.result() with timeout for debugging
+
+                if redis_client: # Save original message to Redis history
+                    try:
+                        redis_key = f"ws_messages:{task_id}"
+                        # result_data already contains the full message payload for STT
+                        message_json_to_store = json.dumps(result_data) 
+                        redis_client.rpush(redis_key, message_json_to_store)
+                        redis_client.expire(redis_key, get_message_ttl())
+                        logger.debug(f"[STT Consumer Thread] Saved original STT message to Redis for task {task_id}")
+                    except Exception as e:
+                        logger.error(f"[STT Consumer Thread] Failed to save STT message to Redis for {task_id}: {e}", exc_info=True)
 
             except json.JSONDecodeError:
-                 logger.error(f"[Thread] Failed to decode message value: {message.value}")
+                 logger.error(f"[STT Consumer Thread] Failed to decode STT message value: {message.value}", exc_info=True)
             except Exception as e:
-                # 개별 메시지 처리 오류 로깅 (루프는 계속 진행)
-                logger.error(f"[Thread] Error processing message: {e}", exc_info=True)
+                logger.error(f"[STT Consumer Thread] Error processing STT message: {e}", exc_info=True)
 
     except Exception as e:
-        # Consumer 루프 자체의 예외 (연결 끊김 등)
-        logger.error(f"Unexpected error in Kafka Consumer loop: {e}", exc_info=True)
+        logger.error(f"Unexpected error in STT Kafka Consumer loop: {e}", exc_info=True)
     finally:
-        # 스레드 종료 시 Consumer 반드시 닫기
-        logger.info("Closing Kafka Consumer in thread.")
-        consumer.close()
+        logger.info("Closing STT Kafka Consumer in thread.")
+        if consumer: # Ensure consumer exists before closing
+            consumer.close()
+
+# --- Kafka Consumer Loop for Translation Results ---
+def _run_translation_result_consumer_loop(consumer_instance: KafkaConsumer, main_loop: asyncio.AbstractEventLoop):
+    logger.info("Translation Result Kafka Consumer thread started. Waiting for messages from topic '{}'...".format(TRANSLATION_RESULTS_TOPIC))
+    redis_client = get_redis_client() # For saving translation results to history (optional)
+
+    try:
+        for message in consumer_instance: # consumer_timeout_ms makes this non-blocking
+            if stop_translation_consumer_event.is_set():
+                logger.info("Stop event received, exiting translation result consumer loop.")
+                break
+
+            if message is None: # Handle poll timeout
+                continue
+            
+            logger.info(f"[Translation Consumer Thread] Message Received: {message.topic}/{message.partition}/{message.offset}: key={message.key}")
+
+            try:
+                result_data = message.value
+                task_id = result_data.get('task_id')
+                status = result_data.get('status') # "TRANSLATED", "TRANSLATION_ERROR"
+                korean_text = result_data.get('korean_text')
+                error_message = result_data.get('error_message')
+
+                if not task_id:
+                    logger.warning(f"[Translation Consumer Thread] Received message without task_id: {result_data}")
+                    continue
+                
+                logger.info(f"[Translation Consumer Thread] Task {task_id}, Status: {status}")
+
+                # Send to WebSocket
+                if main_loop and main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        _send_ws_translation_update_async(
+                            task_id,
+                            status,
+                            korean_text,
+                            error_message
+                        ),
+                        main_loop
+                    )
+                
+                # Save to Redis history (optional, similar to STT results)
+                if redis_client:
+                    try:
+                        # Construct a payload consistent with what frontend might expect for history
+                        history_payload = {
+                            "task_id": task_id,
+                            "type": "translation", # To distinguish in history
+                            "status": status,
+                            "korean_text": korean_text,
+                            "error": error_message,
+                            "timestamp": time.time() # Optional: add a timestamp
+                        }
+                        redis_key = f"ws_messages:{task_id}" # Append to the same history list
+                        message_json_to_store = json.dumps(history_payload)
+                        redis_client.rpush(redis_key, message_json_to_store)
+                        # TTL is managed by STT consumer for the whole list
+                        logger.debug(f"[Translation Consumer Thread] Saved translation message to Redis for task {task_id}")
+                    except Exception as e:
+                        logger.error(f"[Translation Consumer Thread] Failed to save translation message to Redis for {task_id}: {e}", exc_info=True)
+
+            except json.JSONDecodeError:
+                logger.error(f"[Translation Consumer Thread] Failed to decode translation message value: {message.value}", exc_info=True)
+            except Exception as e:
+                logger.error(f"[Translation Consumer Thread] Error processing translation message: {e}", exc_info=True)
+                
+    except Exception as e:
+        logger.error(f"Unexpected error in Translation Kafka Consumer loop: {e}", exc_info=True)
+    finally:
+        logger.info("Closing Translation Kafka Consumer in thread.")
+        if consumer_instance: # Ensure consumer_instance exists
+            consumer_instance.close()
 
 # --- 앱 시작 시 Kafka Consumer 스레드 실행 ---
 @app.on_event("startup")
 async def startup_event():
-    global consumer_thread, consumer # 전역 변수 사용
+    global consumer_thread, consumer, translation_consumer_thread, translation_consumer # 전역 변수 사용
     logger.info("Application starting up...")
 
     # Kafka Consumer 초기화 (재시도 로직 포함)
+    # Initialize STT Result Consumer
     consumer = None
     if KAFKA_BOOTSTRAP_SERVERS:
-        MAX_RETRIES = 5
-        RETRY_DELAY = 5
-        for attempt in range(MAX_RETRIES):
+        MAX_RETRIES_INIT = 3 # Reduced retries for faster startup in dev, adjust for prod
+        RETRY_DELAY_INIT = 3
+        for attempt in range(MAX_RETRIES_INIT):
             try:
-                logger.info(f"Attempting to initialize Kafka Consumer (Attempt {attempt + 1}/{MAX_RETRIES})...")
+                logger.info(f"Attempting to initialize STT Result Kafka Consumer (Attempt {attempt + 1}/{MAX_RETRIES_INIT})...")
                 consumer = KafkaConsumer(
-                    STT_RESULT_TOPIC, # 구독할 토픽
+                    STT_RESULT_TOPIC, 
                     bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                     value_deserializer=lambda v: json.loads(v.decode('utf-8')),
-                    group_id='stt_result_consumers_api', # 컨슈머 그룹 ID
-                    auto_offset_reset='earliest', # 오프셋 초기값
-                    enable_auto_commit=True, # 자동 오프셋 커밋 (간편하지만 메시지 유실 가능성)
-                    consumer_timeout_ms=-1, # 메시지 기다리는 시간 (-1: 무한 대기)
-                    # 추가 옵션 (필요시):
-                    # session_timeout_ms=30000,
-                    # heartbeat_interval_ms=10000,
+                    key_deserializer=lambda k: k.decode('utf-8') if k else None,
+                    group_id='stt_result_consumers_api', 
+                    auto_offset_reset='earliest', 
+                    enable_auto_commit=True, 
+                    consumer_timeout_ms=1000 # To allow periodic check of stop_event
                 )
-                # 간단한 연결 테스트 (토픽 목록 가져오기)
-                consumer.topics() # 브로커와 통신이 되어야 성공
-                logger.info(f"Kafka Consumer initialized successfully for topic: {STT_RESULT_TOPIC}")
-                break # 성공 시 루프 탈출
+                consumer.topics() 
+                logger.info(f"STT Result Kafka Consumer initialized successfully for topic: {STT_RESULT_TOPIC}")
+                break 
             except KafkaError as e:
-                logger.warning(f"Kafka Consumer initialization error (Attempt {attempt + 1}): {e}. Retrying in {RETRY_DELAY} seconds...")
-                if attempt == MAX_RETRIES - 1:
-                    logger.error("Max retries reached. Failed to initialize Kafka Consumer.")
+                logger.warning(f"STT Result Kafka Consumer initialization error (Attempt {attempt + 1}): {e}. Retrying in {RETRY_DELAY_INIT} seconds...")
+                if attempt == MAX_RETRIES_INIT - 1:
+                    logger.error("Max retries reached. Failed to initialize STT Result Kafka Consumer.")
                     consumer = None
-                time.sleep(RETRY_DELAY)
+                time.sleep(RETRY_DELAY_INIT)
             except Exception as e:
-                 logger.error(f"Unexpected error during Kafka Consumer initialization (Attempt {attempt + 1}): {e}", exc_info=True)
+                 logger.error(f"Unexpected error during STT Result Kafka Consumer initialization (Attempt {attempt + 1}): {e}", exc_info=True)
                  consumer = None
-                 break # 예상치 못한 오류는 재시도 중단
+                 break 
 
-        # Consumer 초기화 성공 시에만 스레드 시작
         if consumer:
-            logger.info("Starting Kafka result consumer thread...")
+            logger.info("Starting STT Kafka result consumer thread...")
             stop_consumer_event.clear()
             try:
-                # 현재 실행 중인 (메인) 이벤트 루프를 가져옴
                 main_event_loop = asyncio.get_running_loop()
                 consumer_thread = threading.Thread(
                     target=_run_kafka_consumer_loop,
-                    # consumer 객체와 메인 이벤트 루프 객체를 인자로 전달
                     args=(consumer, main_event_loop,),
-                    daemon=True # 메인 스레드 종료 시 자동 종료
+                    daemon=True 
                 )
                 consumer_thread.start()
-                logger.info("Kafka result consumer thread started successfully.")
+                logger.info("STT Kafka result consumer thread started successfully.")
             except RuntimeError as e:
-                 # get_running_loop() 실패 시 등 (이론상 startup에서는 발생 안해야 함)
-                 logger.error(f"Could not get running event loop to start consumer thread: {e}", exc_info=True)
-                 # consumer를 닫아주는 것이 안전할 수 있음
-                 if consumer:
-                     consumer.close()
+                 logger.error(f"Could not get running event loop to start STT result consumer thread: {e}", exc_info=True)
+                 if consumer: consumer.close()
         else:
-             logger.error("Kafka Consumer could not be initialized. Background result processing will not start.")
+             logger.error("STT Result Kafka Consumer could not be initialized. Background STT result processing will not start.")
+
+        # Initialize Translation Result Consumer
+        translation_consumer = None
+        for attempt in range(MAX_RETRIES_INIT):
+            try:
+                logger.info(f"Attempting to initialize Translation Result Kafka Consumer (Attempt {attempt + 1}/{MAX_RETRIES_INIT})...")
+                translation_consumer = KafkaConsumer(
+                    TRANSLATION_RESULTS_TOPIC, 
+                    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+                    value_deserializer=lambda v: json.loads(v.decode('utf-8')),
+                    key_deserializer=lambda k: k.decode('utf-8') if k else None,
+                    group_id='stt_api_translation_result_consumers', # New group ID
+                    auto_offset_reset='earliest', 
+                    enable_auto_commit=True,
+                    consumer_timeout_ms=1000 # To allow periodic check of stop_event
+                )
+                translation_consumer.topics()
+                logger.info(f"Translation Result Kafka Consumer initialized successfully for topic: {TRANSLATION_RESULTS_TOPIC}")
+                break
+            except KafkaError as e:
+                logger.warning(f"Translation Result Kafka Consumer initialization error (Attempt {attempt + 1}): {e}. Retrying in {RETRY_DELAY_INIT} seconds...")
+                if attempt == MAX_RETRIES_INIT - 1:
+                    logger.error("Max retries reached. Failed to initialize Translation Result Kafka Consumer.")
+                    translation_consumer = None
+                time.sleep(RETRY_DELAY_INIT)
+            except Exception as e:
+                 logger.error(f"Unexpected error during Translation Result Kafka Consumer initialization (Attempt {attempt + 1}): {e}", exc_info=True)
+                 translation_consumer = None
+                 break
+        
+        if translation_consumer:
+            logger.info("Starting Kafka translation result consumer thread...")
+            stop_translation_consumer_event.clear()
+            try:
+                main_event_loop = asyncio.get_running_loop() # Should be the same loop
+                translation_consumer_thread = threading.Thread(
+                    target=_run_translation_result_consumer_loop, # New loop function
+                    args=(translation_consumer, main_event_loop,),
+                    daemon=True
+                )
+                translation_consumer_thread.start()
+                logger.info("Kafka translation result consumer thread started successfully.")
+            except RuntimeError as e:
+                 logger.error(f"Could not get running event loop to start translation result consumer thread: {e}", exc_info=True)
+                 if translation_consumer: translation_consumer.close()
+        else:
+            logger.error("Translation Result Kafka Consumer could not be initialized. Background translation result processing will not start.")
+            
     else:
-         logger.error("Kafka bootstrap servers not configured. Result consumer cannot start.")
+         logger.error("Kafka bootstrap servers not configured. Result consumers cannot start.")
 
 
 
@@ -237,36 +416,75 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Application shutting down...")
+    # Stop STT result consumer
     if consumer_thread and consumer_thread.is_alive():
-        logger.info("Signaling Kafka consumer thread to stop...")
+        logger.info("Signaling STT result Kafka consumer thread to stop...")
         stop_consumer_event.set()
-        consumer_thread.join(timeout=5) # 최대 5초 대기
+        consumer_thread.join(timeout=5) 
         if consumer_thread.is_alive():
-            logger.warning("Kafka consumer thread did not stop gracefully after 5 seconds.")
+            logger.warning("STT result Kafka consumer thread did not stop gracefully after 5 seconds.")
         else:
-             logger.info("Kafka consumer thread stopped.")
+             logger.info("STT result Kafka consumer thread stopped.")
     else:
-        logger.info("Kafka consumer thread was not running or already stopped.")
-    # Producer도 여기서 닫아주는 것이 좋음 (애플리케이션 종료 시)
+        logger.info("STT result Kafka consumer thread was not running or already stopped.")
+
+    # Stop Translation result consumer
+    if translation_consumer_thread and translation_consumer_thread.is_alive():
+        logger.info("Signaling Translation result Kafka consumer thread to stop...")
+        stop_translation_consumer_event.set()
+        translation_consumer_thread.join(timeout=5)
+        if translation_consumer_thread.is_alive():
+            logger.warning("Translation result Kafka consumer thread did not stop gracefully after 5 seconds.")
+        else:
+            logger.info("Translation result Kafka consumer thread stopped.")
+    else:
+        logger.info("Translation result Kafka consumer thread was not running or already stopped.")
+
     if producer:
         logger.info("Closing Kafka Producer.")
-        producer.close(timeout=5) # 타임아웃 지정 가능
+        producer.close(timeout=5) 
 
 # --- WebSocket 메시지 전송 함수 (async def 로 정의) ---
 # (이 함수는 메인 이벤트 루프에서 실행될 것이므로 async def 유지)
 async def _send_ws_update_async(task_id: str, status: str, progress: int = None, data: Any = None, error: str = None):
     """비동기적으로 WebSocket 메시지를 전송하는 내부 함수"""
-    message = {"status": status}
-    if progress is not None: message["progress"] = max(0, min(100, progress))
-    if data is not None: message["data"] = data
-    if error is not None: message["error"] = error
+    # This function is for STT updates
+    ws_payload = {"task_id": task_id, "type": "stt", "status": status}
+    if progress is not None: ws_payload["progress"] = max(0, min(100, progress))
+    if data is not None: ws_payload["data"] = data # This data is STT segments
+    if error is not None: ws_payload["error"] = error
+    
     try:
         if manager:
-            await manager.send_json_message(task_id, message)
+            # logger.debug(f"Sending STT WS update for {task_id}: Status {status}, Data type: {type(data)}")
+            await manager.send_json_message(task_id, ws_payload)
         else:
-            logger.warning(f"[Task {task_id}] WebSocket manager not available, skipping live send.")
+            logger.warning(f"[Task {task_id}] WebSocket manager not available, skipping STT live send.")
     except Exception as e:
-        logger.error(f"[Task {task_id}] Failed to send WebSocket update ({status}): {e}")
+        logger.error(f"[Task {task_id}] Failed to send STT WebSocket update ({status}): {e}")
+
+
+async def _send_ws_translation_update_async(task_id: str, status: str, korean_text: str = None, error: str = None):
+    """비동기적으로 WebSocket으로 번역 결과를 전송하는 내부 함수"""
+    ws_payload = {
+        "task_id": task_id,
+        "type": "translation", # New type
+        "status": status, # "TRANSLATED" or "TRANSLATION_ERROR"
+    }
+    if korean_text:
+        ws_payload["korean_text"] = korean_text
+    if error:
+        ws_payload["error"] = error
+    
+    try:
+        if manager:
+            # logger.debug(f"Sending Translation WS update for {task_id}: Status {status}")
+            await manager.send_json_message(task_id, ws_payload)
+        else:
+            logger.warning(f"[Task {task_id}] WebSocket manager not available, skipping translation live send.")
+    except Exception as e:
+        logger.error(f"[Task {task_id}] Failed to send translation WebSocket update ({status}): {e}")
+
 
 # --- API 엔드포인트 수정 ---
 @app.post("/request_transcription", response_model=TranscriptionResponse, status_code=202, summary="Request Transcription via Kafka")

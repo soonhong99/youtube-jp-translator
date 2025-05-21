@@ -113,6 +113,25 @@ services:
     # -A: Celery 앱 위치 지정, worker: 워커 모드, --loglevel: 로그 레벨
     # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
     command: python src/consumer.py
+
+  translation-service:
+    build: ./services/translation-service
+    container_name: translation-service
+    ports:
+      - "127.0.0.1:8002:80" # Health check on port 80 in container, mapped to 8002 on host
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TRANSLATION_REQUESTS_TOPIC=${KAFKA_TRANSLATION_REQUESTS_TOPIC:-translation_requests}
+      - KAFKA_TRANSLATION_RESULTS_TOPIC=${KAFKA_TRANSLATION_RESULTS_TOPIC:-translation_results}
+      - KAFKA_TRANSLATION_WORKER_GROUP_ID=${KAFKA_TRANSLATION_WORKER_GROUP_ID:-translation_workers_group}
+      - TRANSLATION_PROMPT_TEMPLATE=${TRANSLATION_PROMPT_TEMPLATE}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
 # 볼륨 정의
 volumes:
   kafka_data:
