@@ -153,6 +153,6 @@ if __name__ == "__main__":
     # load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
     
     # You might need to adjust host and port for local testing
-    uvicorn.run(app, host="0.0.0.0", port=8003, log_level="info") # Example port for local run
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info") # Example port for local run
     # The lifespan events will handle Kafka consumer start/stop.
-```
+

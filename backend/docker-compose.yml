@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Zookeeper 추가 (Kafka 의존성)
   zookeeper:
