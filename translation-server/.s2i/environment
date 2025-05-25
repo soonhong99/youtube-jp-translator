@@ -1,0 +1,5 @@
+# translation-server/.s2i/environment
+MODEL_NAME=TranslatorModel # Python 클래스 이름
+API_TYPE=REST             # REST API 엔드포인트 생성
+SERVICE_TYPE=MODEL        # 단일 모델 서빙
+PERSISTENCE=0             # 모델 자동 저장 비활성화 (우리가 직접 로드/관리)

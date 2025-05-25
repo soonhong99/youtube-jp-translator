@@ -1,0 +1,36 @@
+apiVersion: machinelearning.seldon.io/v1
+kind: SeldonDeployment
+metadata:
+  name: jp-ko-translator
+  namespace: seldon-models
+spec:
+  name: translator
+  protocol: seldon # 또는 v2 (이제 다시 시도해 볼 수도 있음)
+  predictors:
+    - name: default
+      graph:
+        name: translator-model
+        type: MODEL
+        implementation: PYTHON_WRAPPER
+        modelUri: /mnt/models # <--- 유효성 검사 통과용으로 유지! (값은 중요하지 않음)
+        endpoint:
+          type: REST
+      componentSpecs:
+      - spec:
+          containers:
+          - name: translator-model
+            image: jp-ko-translator:0.1
+            imagePullPolicy: IfNotPresent
+            resources: # 리소스 요청/제한 (모델 크기에 맞게 조절)
+              requests:
+                cpu: "1"
+                memory: "4Gi"
+              limits:
+                cpu: "2"
+                memory: "8Gi"
+                # GPU 사용 시 주석 해제 및 Minikube GPU 설정 필요
+                # nvidia.com/gpu: "1"
+            env:
+              # Python 코드에서 참조하는 모델 디렉토리 경로
+              - name: MODEL_DIR
+                value: /app/model_files

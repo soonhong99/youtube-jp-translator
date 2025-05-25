@@ -1,0 +1,5 @@
+# translation-server/requirements.txt
+seldon-core >= 1.17.0  # Seldon Core 최신 안정 버전 확인
+transformers[sentencepiece] >= 4.30.0 # 모델에 맞는 버전 확인
+torch >= 1.10.0 # 또는 CPU 전용 torch-cpu
+# 기타 필요한 라이브러리 (예: numpy)
