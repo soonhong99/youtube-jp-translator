@@ -8,4 +8,5 @@ python-dotenv      # 환경 변수 관리 (선택 사항)
 kafka-python
 redis         # Python Redis 클라이언트
 pydub         # 오디오 분할/처리용
+google-generativeai
 # websockets 라이브러리는 uvicorn[standard]에 포함될 수 있음

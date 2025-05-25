@@ -77,6 +77,7 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092 # Kafka 서비스 이름:포트
       - REDIS_HOST=redis # Redis는 히스토리 저장용으로 남겨둠 (아래 Redis 서비스 필요)
       - REDIS_PORT=6379
+      - GEMINI_API_KEY=${GEMINI_API_KEY} 
       - REDIS_DB_WS_MESSAGES=3
       - PYTHONUNBUFFERED=1
     depends_on: # Redis가 먼저 실행되어야 함

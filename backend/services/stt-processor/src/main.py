@@ -1,10 +1,11 @@
 import logging
 import uuid # 고유 Task ID 생성용
 import asyncio
+import google.generativeai as genai
 import os
 from fastapi import FastAPI, HTTPException, Body, WebSocket, WebSocketDisconnect, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
-from typing import Dict, List, Any
+from typing import Union, Dict, List, Any
 from fastapi.middleware.cors import CORSMiddleware # 이 import 확인
 import json
 import time
@@ -21,6 +22,72 @@ from .redis_client import get_redis_client, get_message_ttl # Redis는 히스토
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 환경 변수에서 Gemini API 키 로드
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        logger.info("Gemini API Key configured successfully.")
+        # 번역에 사용할 모델 인스턴스 (애플리케이션 로드 시 한 번만 생성 권장)
+        # 사용 가능한 모델: gemini-1.5-flash-latest, gemini-1.5-pro-latest, gemini-pro 등
+        gemini_translation_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        logger.info("Gemini model 'gemini-1.5-flash-latest' initialized for translation.")
+    except Exception as e:
+        logger.error(f"Failed to configure Gemini API or initialize model: {e}", exc_info=True)
+        gemini_translation_model = None # 초기화 실패 시 None으로 설정
+else:
+    logger.warning("GEMINI_API_KEY environment variable not found. Translation via Gemini will be disabled.")
+    gemini_translation_model = None
+
+async def translate_japanese_to_korean_with_gemini(japanese_text: str) -> Union[str, None]:
+    """주어진 일본어 텍스트를 Gemini API를 사용하여 한국어로 번역합니다."""
+    if not gemini_translation_model: # 초기화된 모델 인스턴스 사용
+        logger.warning("Gemini translation model is not initialized. Skipping translation.")
+        return None
+
+    # --- 프롬프트 엔지니어링 (구어체 및 자연스러운 번역 유도) ---
+    # 예시 프롬프트입니다. 실제 사용 시 다양한 테스트를 통해 최적화하세요.
+    prompt = f"""다음 일본어 구어체 문장을 매우 자연스러운 한국어 구어체로 번역해주세요.
+                일본어: "{japanese_text}"
+                한국어:"""
+    
+    logger.debug(f"Sending text to Gemini for translation: '{japanese_text}'")
+
+    try:
+        # API 호출 시 안전 설정 및 생성 설정 (선택적)
+        generation_config = genai.types.GenerationConfig(
+            temperature=0.7, # 창의성 조절 (0.0 ~ 1.0)
+            # max_output_tokens=..., # 필요시 최대 출력 토큰 수 제한
+        )
+        # 안전 설정 (유해 콘텐츠 차단 레벨 조정 - 필요시)
+        # safety_settings = [
+        #     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        #     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        #     {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        #     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        # ]
+
+        # 비동기 API 호출
+        response = await gemini_translation_model.generate_content_async(
+            prompt,
+            generation_config=generation_config,
+            # safety_settings=safety_settings # 안전 설정 적용 시
+        )
+
+        if response.parts:
+            translated_korean_text = response.text.strip()
+            logger.debug(f"Gemini translation successful: '{japanese_text}' -> '{translated_korean_text}'")
+            return translated_korean_text
+        else:
+            # 응답에 텍스트 파트가 없는 경우 (차단 등)
+            block_reason = response.prompt_feedback.block_reason if response.prompt_feedback else "Unknown"
+            safety_ratings_str = str(response.candidates[0].safety_ratings) if response.candidates and response.candidates[0].safety_ratings else "N/A"
+            logger.warning(f"Gemini response for '{japanese_text}' did not contain text parts. Blocked: {block_reason}, SafetyRatings: {safety_ratings_str}")
+            return "[번역 실패: Gemini 응답 없음]"
+    except Exception as e:
+        logger.error(f"Error during Gemini API call for text '{japanese_text}': {e}", exc_info=True)
+        return "[번역 오류 발생]"
 
 # --- Kafka Producer 초기화 ---
 # Producer는 비교적 가벼우므로 요청 시 생성하거나, 앱 시작 시 생성 가능
@@ -85,84 +152,150 @@ consumer = None # Consumer 객체를 전역 또는 클래스 멤버로 관리
 def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.AbstractEventLoop):
     """
     백그라운드 스레드에서 실행될 Kafka Consumer 루프.
-    메인 asyncio 루프 객체를 인자로 받아 WebSocket 통신에 사용합니다.
+    STT 결과를 받아 Gemini로 번역 후 WebSocket 통신 및 Redis 저장을 수행합니다.
     """
-    # 스레드 내에서 필요한 클라이언트 등 얻기 (Redis 예시)
     redis_client = get_redis_client()
     logger.info("Kafka Consumer thread started. Waiting for messages from topic '{}'...".format(STT_RESULT_TOPIC))
 
     try:
-        # 동기 Consumer 루프
-        for message in consumer:
-            # 앱 종료 신호 확인
+        for message in consumer: # Kafka 메시지 수신 루프
             if stop_consumer_event.is_set():
-                logger.info("Stop event received, exiting consumer loop.")
+                logger.info("Stop event received by Kafka consumer thread, exiting loop.")
                 break
 
-            # --- 테스트용 로그 ---
             logger.info(f"!!!!!!!!!! [Thread] Message Received from Kafka: {message.topic}/{message.partition}/{message.offset}: key={message.key} !!!!!!!!!!")
 
             try:
-                result_data = message.value # value_deserializer가 이미 dict로 변환했을 것
-                logger.debug(f"[Thread] Message Value (raw): {result_data}")
+                result_data = message.value # JSON 역직렬화된 dict (KafkaConsumer 설정에 따름)
                 task_id = result_data.get('task_id')
 
-                if task_id:
-                    logger.info(f"[Thread] Received result/update for task {task_id}, Status: {result_data.get('status')}")
-
-                    # 1. WebSocket으로 실시간 전송 (메인 루프 사용)
-                    if main_loop and main_loop.is_running():
-                        logger.debug(f"[Thread] Scheduling WS send for task {task_id} on main loop...")
-                        # _send_ws_update_async 코루틴을 메인 루프에서 실행하도록 예약
-                        future = asyncio.run_coroutine_threadsafe(
-                            _send_ws_update_async( # 이 함수는 async def 여야 함
-                                task_id,
-                                result_data.get("status", "UNKNOWN"),
-                                result_data.get("progress"),
-                                result_data.get("data"),
-                                result_data.get("error")
-                            ),
-                            main_loop # 전달받은 메인 루프 사용
-                        )
-                        # 선택 사항: 전송 결과 확인 (블로킹 주의)
-                        # try:
-                        #     future.result(timeout=5) # 예: 5초 타임아웃
-                        #     logger.debug(f"[Thread] WS send scheduled successfully for task {task_id}.")
-                        # except TimeoutError:
-                        #      logger.warning(f"[Thread] Timeout waiting for WS send result for task {task_id}.")
-                        # except Exception as e:
-                        #      logger.error(f"[Thread] Exception during WS send scheduling/execution for task {task_id}: {e}")
-
-                    else:
-                         logger.warning(f"[Thread] Main event loop not running or not available for task {task_id}. Skipping WS send.")
-
-                    # 2. Redis에 메시지 히스토리 저장 (동기 작업)
-                    if redis_client:
-                        try:
-                            redis_key = f"ws_messages:{task_id}"
-                            message_json = json.dumps(result_data)
-                            redis_client.rpush(redis_key, message_json)
-                            # TTL은 매번 설정해도 되지만, 처음 또는 주기적으로 설정하는 것이 더 효율적일 수 있음
-                            redis_client.expire(redis_key, get_message_ttl())
-                            logger.debug(f"[Thread] Saved WS message to Redis list {redis_key}")
-                        except Exception as e:
-                            logger.error(f"[Thread] Failed to save message to Redis for {task_id}: {e}", exc_info=True)
-                else:
+                if not task_id:
                     logger.warning(f"[Thread] Received message without task_id: {result_data}")
+                    continue # task_id 없으면 다음 메시지로
 
-            except json.JSONDecodeError:
-                 logger.error(f"[Thread] Failed to decode message value: {message.value}")
-            except Exception as e:
-                # 개별 메시지 처리 오류 로깅 (루프는 계속 진행)
-                logger.error(f"[Thread] Error processing message: {e}", exc_info=True)
+                logger.info(f"[Thread][Task {task_id}] Received Kafka message, Status: {result_data.get('status')}, Progress: {result_data.get('progress')}")
+                logger.debug(f"[Thread][Task {task_id}] Raw message data: {result_data.get('data')}")
 
-    except Exception as e:
-        # Consumer 루프 자체의 예외 (연결 끊김 등)
-        logger.error(f"Unexpected error in Kafka Consumer loop: {e}", exc_info=True)
+                # --- STT 세그먼트 데이터가 있고, 번역이 필요한 경우 ---
+                # result_data["data"]가 리스트이고, 그 안에 "text" 키를 가진 딕셔너리들이 있다면 STT 결과로 간주
+                is_stt_segment_data = (
+                    result_data.get("data")
+                    and isinstance(result_data["data"], list)
+                    and len(result_data["data"]) > 0
+                    and isinstance(result_data["data"][0], dict)
+                    and "text" in result_data["data"][0] # 첫 번째 요소에 text 필드 확인
+                )
+
+                if is_stt_segment_data:
+                    stt_segments = result_data["data"]
+                    logger.info(f"[Thread][Task {task_id}] Found {len(stt_segments)} STT segments. Proceeding to translate with Gemini.")
+
+                    # --- 비동기 번역 작업을 위한 헬퍼 함수 ---
+                    async def _translate_batch_async(segments_to_translate):
+                        translation_coroutines = []
+                        for seg_idx, segment_content in enumerate(segments_to_translate):
+                            jp_text = segment_content.get("text")
+                            if jp_text and isinstance(jp_text, str): # 실제 텍스트가 있는지 확인
+                                logger.debug(f"[Thread][Task {task_id}][Seg {seg_idx+1}] Scheduling translation for: '{jp_text}'")
+                                translation_coroutines.append(translate_japanese_to_korean_with_gemini(jp_text))
+                            else:
+                                # 번역할 일본어 텍스트가 없는 경우 (예: 빈 문자열, None)
+                                logger.debug(f"[Thread][Task {task_id}][Seg {seg_idx+1}] No Japanese text to translate, skipping Gemini call.")
+                                translation_coroutines.append(asyncio.sleep(0, result="[원본 텍스트 없음 또는 부적절]")) # 즉시 완료, 플레이스홀더 반환
+                        
+                        # 모든 번역 작업을 동시에 실행하고 결과 수집 (개별 작업 오류도 반환)
+                        return await asyncio.gather(*translation_coroutines, return_exceptions=True)
+                    # --- 비동기 번역 헬퍼 함수 끝 ---
+
+                    # 메인 이벤트 루프에서 번역 작업들 실행 및 결과 대기
+                    if main_loop and main_loop.is_running() and gemini_translation_model: # Gemini 모델 초기화 확인
+                        future = asyncio.run_coroutine_threadsafe(_translate_batch_async(stt_segments), main_loop)
+                        try:
+                            # 번역 작업 타임아웃 설정 (넉넉하게, 세그먼트 수에 따라 조절)
+                            # 예: 기본 30초 + (세그먼트당 평균 5초 * 세그먼트 수)
+                            timeout_seconds = 30 + (len(stt_segments) * 5) 
+                            logger.debug(f"[Thread][Task {task_id}] Waiting for {len(stt_segments)} translations with timeout {timeout_seconds}s...")
+                            translated_texts_or_errors_list = future.result(timeout=timeout_seconds)
+                            logger.info(f"[Thread][Task {task_id}] Gemini translation batch completed.")
+
+                            # 번역 결과를 원본 세그먼트에 'korean_text' 키로 추가
+                            for i, segment in enumerate(stt_segments):
+                                original_jp_text = segment.get("text", "[원본 JP 없음]") # 로깅용
+                                if i < len(translated_texts_or_errors_list):
+                                    translation_result = translated_texts_or_errors_list[i]
+                                    if isinstance(translation_result, Exception):
+                                        # 개별 번역 작업에서 예외 발생 시
+                                        logger.error(f"[Thread][Task {task_id}][Seg {i+1}] Translation failed for '{original_jp_text}': {translation_result}")
+                                        segment["korean_text"] = "[번역 중 오류 발생]"
+                                    elif translation_result is None:
+                                        # translate_japanese_to_korean_with_gemini 가 None 반환 시 (API 키 없음 등)
+                                        logger.warning(f"[Thread][Task {task_id}][Seg {i+1}] Translation for '{original_jp_text}' returned None.")
+                                        segment["korean_text"] = "[번역 결과 없음]"
+                                    else:
+                                        segment["korean_text"] = str(translation_result) # 문자열로 확실히 변환
+                                        # --- 번역된 한국어 내용 로그로 바로 확인 ---
+                                        logger.info(f"[Thread][Task {task_id}][Seg {i+1}] JP: '{original_jp_text}'  ==>  KO: '{segment['korean_text']}'")
+                                else:
+                                    logger.warning(f"[Thread][Task {task_id}][Seg {i+1}] Translation result missing for '{original_jp_text}'.")
+                                    segment["korean_text"] = "[번역 누락]"
+                        except asyncio.TimeoutError:
+                            logger.error(f"[Thread][Task {task_id}] Gemini translation for segments timed out after {timeout_seconds}s.")
+                            for segment in stt_segments: segment["korean_text"] = "[번역 시간 초과]"
+                        except Exception as e_trans_batch:
+                            logger.error(f"[Thread][Task {task_id}] An error occurred during batch Gemini translation execution: {e_trans_batch}", exc_info=True)
+                            for segment in stt_segments: segment["korean_text"] = "[번역 시스템 오류]"
+                    elif not gemini_translation_model:
+                        logger.warning(f"[Thread][Task {task_id}] Gemini model not initialized. Skipping all translations.")
+                        for segment in stt_segments: segment["korean_text"] = "[번역 건너뜀 - 모델 미초기화]"
+                    else: # main_loop 없거나 실행 중 아닐 때
+                        logger.warning(f"[Thread][Task {task_id}] Main event loop not available. Skipping all translations.")
+                        for segment in stt_segments: segment["korean_text"] = "[번역 건너뜀 - 루프 없음]"
+                    
+                    result_data["data"] = stt_segments # 번역된 텍스트가 포함된 세그먼트로 업데이트
+                # --- STT 세그먼트 번역 처리 끝 ---
+
+                # WebSocket으로 업데이트된 result_data 전송 및 Redis 저장
+                if main_loop and main_loop.is_running():
+                    logger.debug(f"[Thread][Task {task_id}] Scheduling WebSocket send and Redis save.")
+                    asyncio.run_coroutine_threadsafe(
+                        _send_ws_update_async(
+                            task_id,
+                            result_data.get("status", "UNKNOWN"),
+                            result_data.get("progress"),
+                            result_data.get("data"), # 이제 여기에 korean_text 포함됨
+                            result_data.get("error")
+                        ),
+                        main_loop
+                    )
+                else:
+                    logger.warning(f"[Thread][Task {task_id}] Main event loop not available for WebSocket/Redis update.")
+                
+                # Redis 저장 (동기적, 에러 핸들링 추가)
+                if redis_client:
+                    try:
+                        redis_key = f"ws_messages:{task_id}"
+                        # result_data가 dict인지 확인 (value_deserializer에 의해 이미 dict여야 함)
+                        message_to_store = result_data if isinstance(result_data, dict) else {"error": "Invalid data format for Redis"}
+                        message_json = json.dumps(message_to_store) # 이제 korean_text 포함
+                        redis_client.rpush(redis_key, message_json)
+                        redis_client.expire(redis_key, get_message_ttl())
+                        logger.debug(f"[Thread][Task {task_id}] Saved updated message to Redis list {redis_key}")
+                    except Exception as e_redis:
+                        logger.error(f"[Thread][Task {task_id}] Failed to save message to Redis: {e_redis}", exc_info=True)
+
+            except json.JSONDecodeError as e_json_decode:
+                 logger.error(f"[Thread] Failed to decode Kafka message value: {message.value}. Error: {e_json_decode}", exc_info=True)
+            except Exception as e_msg_proc:
+                logger.error(f"[Thread][Task {task_id if 'task_id' in locals() else 'Unknown'}] Error processing Kafka message: {e_msg_proc}", exc_info=True)
+
+    except KeyboardInterrupt: # Ctrl+C 등으로 스레드 종료 시
+        logger.info("Kafka Consumer thread received KeyboardInterrupt. Exiting...")
+    except Exception as e_consumer_loop:
+        logger.error(f"Fatal error in Kafka Consumer loop: {e_consumer_loop}", exc_info=True)
     finally:
-        # 스레드 종료 시 Consumer 반드시 닫기
         logger.info("Closing Kafka Consumer in thread.")
-        consumer.close()
+        if consumer: # consumer 객체가 None이 아닐 때만 close 호출
+            consumer.close()
 
 # --- 앱 시작 시 Kafka Consumer 스레드 실행 ---
 @app.on_event("startup")
