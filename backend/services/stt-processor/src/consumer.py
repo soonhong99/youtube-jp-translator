@@ -76,113 +76,140 @@ def send_update_to_kafka(task_id: str, status: str, progress: int = None, data: 
 def process_stt_request(task_id: str, wav_file_path: str, language: str):
     """STT 요청 처리: 오디오 분할, 청크별 STT, 결과 Kafka 전송"""
     logger.info(f"[Task {task_id}] Processing started for: {wav_file_path}")
-    send_update_to_kafka(task_id, "PROCESSING", progress=0)
+    # 초기 상태 업데이트: 작업 시작 알림
+    send_update_to_kafka(task_id, "PROCESSING", progress=0, data={"message": "Audio processing initiated."})
 
     base_dir = Path(wav_file_path).parent
-    chunk_output_dir = base_dir / f"chunks_{task_id}"
+    # 작업별 고유한 청크 디렉토리 이름 생성 (충돌 방지)
+    chunk_output_dir_name = f"chunks_{task_id}"
+    chunk_output_dir = base_dir / chunk_output_dir_name
     try:
         chunk_output_dir.mkdir(exist_ok=True, parents=True)
+        logger.info(f"[Task {task_id}] Created chunk directory: {chunk_output_dir}")
     except OSError as e:
         logger.error(f"[Task {task_id}] Failed to create chunk directory {chunk_output_dir}: {e}")
         send_update_to_kafka(task_id, "FAILED", error=f"Cannot create temporary directory: {e}")
-        return # 작업 실패
+        return
 
-    all_segments_combined = [] # 전체 결과 저장용 (선택 사항)
+    all_segments_combined = [] # 모든 STT 세그먼트를 축적할 리스트
     has_chunk_error = False
 
     try:
-        # 1. 오디오 로드 및 분할
-        logger.info(f"[Task {task_id}] Loading audio file...")
+        logger.info(f"[Task {task_id}] Loading audio file: {wav_file_path}")
         audio = AudioSegment.from_wav(wav_file_path)
         total_duration_ms = len(audio)
         logger.info(f"[Task {task_id}] Audio loaded. Duration: {total_duration_ms / 1000:.2f}s")
-        send_update_to_kafka(task_id, "PROCESSING", progress=5, data={"message": "Audio loaded, splitting..."})
+        send_update_to_kafka(task_id, "PROCESSING", progress=5, data={"message": "Audio loaded, splitting into chunks..."})
 
-        chunk_length_ms = 60 * 1000
+        chunk_length_ms = 60 * 1000  # 60초 단위로 청크 분할
         chunks = [audio[i:min(i + chunk_length_ms, total_duration_ms)] for i in range(0, total_duration_ms, chunk_length_ms)]
         total_chunks = len(chunks)
 
-        if not chunks:
-            logger.warning(f"[Task {task_id}] No chunks generated.")
-            send_update_to_kafka(task_id, "COMPLETED", progress=100, data=[])
+        if not chunks: # 청크가 생성되지 않은 경우 (예: 매우 짧은 오디오)
+            logger.warning(f"[Task {task_id}] No audio chunks were generated from the input file.")
+            # STT 작업은 완료되었지만, 번역할 내용이 없음을 API에 알림
+            send_update_to_kafka(task_id, "STT_COMPLETED_ALL_SEGMENTS", progress=95, data=[])
             return
 
-        logger.info(f"[Task {task_id}] Split into {total_chunks} chunks.")
+        logger.info(f"[Task {task_id}] Audio split into {total_chunks} chunks.")
         send_update_to_kafka(task_id, "PROCESSING", progress=10, data={"message": f"Split into {total_chunks} chunks."})
 
-        # 2. 각 청크 처리 (순차적 또는 병렬 처리 구현 필요)
-        # 여기서는 간단하게 순차 처리 예시
-        for i, chunk in enumerate(chunks):
-            chunk_path_obj = chunk_output_dir / f"chunk_{i}.wav"
-            chunk_path = str(chunk_path_obj)
-            chunk_start_time_sec = (i * chunk_length_ms) / 1000.0 # 청크 시작 오프셋
+        # 각 청크 순차 처리
+        for i, chunk_audio_segment in enumerate(chunks):
+            chunk_file_name = f"chunk_{i}.wav"
+            chunk_path_obj = chunk_output_dir / chunk_file_name
+            chunk_path_str = str(chunk_path_obj)
+            # 현재 청크의 시작 시간 오프셋 (전체 오디오 기준, 초 단위)
+            current_chunk_start_offset_sec = (i * chunk_length_ms) / 1000.0
 
             try:
-                logger.debug(f"[Task {task_id}] Exporting chunk {i+1}/{total_chunks} to {chunk_path}")
-                chunk.export(chunk_path, format="wav")
+                logger.debug(f"[Task {task_id}] Exporting chunk {i+1}/{total_chunks} to {chunk_path_str}")
+                chunk_audio_segment.export(chunk_path_str, format="wav")
 
-                logger.info(f"[Task {task_id}] Starting STT for chunk {i+1}/{total_chunks}")
-                # STT 함수 호출
-                segments = transcribe_audio_file_with_timestamps(chunk_path, language)
-                logger.info(f"[Task {task_id}] STT complete for chunk {i+1}. Found {len(segments)} segments.")
+                logger.info(f"[Task {task_id}] Starting STT for chunk {i+1}/{total_chunks} (Path: {chunk_path_str})")
+                # STT 함수 호출 (결과는 [{ 'start': float, 'end': float, 'text': str }, ...])
+                segments_in_chunk = transcribe_audio_file_with_timestamps(chunk_path_str, language)
+                logger.info(f"[Task {task_id}] STT for chunk {i+1} completed. Found {len(segments_in_chunk)} segments.")
 
-                # 결과 세그먼트의 타임스탬프 조정 (청크 오프셋 반영)
-                adjusted_segments = []
-                for seg in segments:
-                    adjusted_seg = seg.copy()
-                    adjusted_seg['start'] += chunk_start_time_sec
-                    adjusted_seg['end'] += chunk_start_time_sec
-                    adjusted_segments.append(adjusted_seg)
-                    all_segments_combined.append(adjusted_seg) # 전체 결과 누적
+                # 현재 청크의 세그먼트들의 타임스탬프를 전체 오디오 기준으로 조정
+                adjusted_segments_for_this_chunk = []
+                for seg in segments_in_chunk:
+                    adjusted_seg = seg.copy() # 원본 수정을 피하기 위해 복사
+                    # round 함수로 소수점 자릿수 정리 (예: 3자리)
+                    adjusted_seg['start'] = round(seg['start'] + current_chunk_start_offset_sec, 3)
+                    adjusted_seg['end'] = round(seg['end'] + current_chunk_start_offset_sec, 3)
+                    adjusted_segments_for_this_chunk.append(adjusted_seg)
+                    all_segments_combined.append(adjusted_seg) # 전체 결과 리스트에도 누적
 
-                # 조정된 세그먼트를 Kafka로 전송
-                progress = 10 + int(90 * (i + 1) / total_chunks)
-                send_update_to_kafka(task_id, "PROCESSING", progress=progress, data=adjusted_segments)
+                # (선택적 유지) 현재 청크의 (타임스탬프 조정된) 일본어 결과만 Kafka로 전송
+                # 진행률 계산: 초기 10% + STT 진행률 (전체 85% 할당)
+                progress_after_chunk = 10 + int(85 * (i + 1) / total_chunks)
+                send_update_to_kafka(
+                    task_id,
+                    "PROCESSING",
+                    progress=progress_after_chunk,
+                    data=adjusted_segments_for_this_chunk # 현재 청크의 결과만
+                )
+                
+                # 사용한 임시 청크 파일 삭제 (성공적으로 처리된 경우)
+                try:
+                    os.remove(chunk_path_str)
+                    logger.debug(f"[Task {task_id}] Removed temporary chunk file: {chunk_path_str}")
+                except OSError as e_remove:
+                    logger.warning(f"[Task {task_id}] Could not remove temporary chunk file {chunk_path_str}: {e_remove}")
 
-                # 임시 청크 파일 삭제 (선택적)
-                # os.remove(chunk_path)
 
             except FileNotFoundError:
-                 logger.error(f"[Task {task_id}] Chunk file not found: {chunk_path}")
-                 send_update_to_kafka(task_id, "CHUNK_FAILED", error=f"Chunk file not found: {chunk_path}")
+                 logger.error(f"[Task {task_id}] Chunk file not found during STT processing: {chunk_path_str}")
+                 send_update_to_kafka(task_id, "CHUNK_FAILED", error=f"Chunk file not found: {chunk_path_str}")
                  has_chunk_error = True
-            except RuntimeError as stt_err: # STT 모델 로드 실패 등
+            except RuntimeError as stt_err: # STT 모델 자체의 런타임 오류 등
                  logger.error(f"[Task {task_id}] STT Runtime error for chunk {i+1}: {stt_err}", exc_info=True)
-                 send_update_to_kafka(task_id, "CHUNK_FAILED", error=f"STT Runtime error in chunk {i+1}: {stt_err}")
+                 send_update_to_kafka(task_id, "CHUNK_FAILED", error=f"STT error in chunk {i+1}: {stt_err}")
                  has_chunk_error = True
-            except Exception as e:
-                logger.error(f"[Task {task_id}] Error processing chunk {i+1}: {e}", exc_info=True)
-                send_update_to_kafka(task_id, "CHUNK_FAILED", error=f"Error processing chunk {i+1}: {e}")
+            except Exception as e: # 기타 예외 처리
+                logger.error(f"[Task {task_id}] Unexpected error processing chunk {i+1}: {e}", exc_info=True)
+                send_update_to_kafka(task_id, "CHUNK_FAILED", error=f"Error in chunk {i+1}: {e}")
                 has_chunk_error = True
-                # 오류 발생 시 계속 진행할지 결정
+                # 중대한 오류 시 여기서 루프를 중단할지(break) 아니면 계속 진행할지 결정 필요
 
-        # 3. 최종 완료/실패 메시지 전송
+        # --- 모든 청크 처리 완료 후 ---
         if has_chunk_error:
-            logger.warning(f"[Task {task_id}] Processing finished with errors.")
-            send_update_to_kafka(task_id, "FAILED", progress=100, error="Processing completed with errors in some chunks.")
+            logger.warning(f"[Task {task_id}] STT processing finished with errors in some chunks.")
+            send_update_to_kafka(task_id, "FAILED", progress=100, error="Processing completed with errors during STT.")
         else:
-            logger.info(f"[Task {task_id}] Processing completed successfully.")
-            # 최종 완료 메시지 (선택적으로 전체 세그먼트 포함 가능)
-            # send_update_to_kafka(task_id, "COMPLETED", progress=100, data=all_segments_combined)
-            send_update_to_kafka(task_id, "COMPLETED", progress=100)
+            logger.info(f"[Task {task_id}] All STT chunks processed successfully. Sending combined segments for batch translation trigger.")
+            # *** 핵심 수정: 모든 일본어 세그먼트를 포함한 메시지를 API에 전달하여 일괄 번역 트리거 ***
+            send_update_to_kafka(
+                task_id,
+                "STT_COMPLETED_ALL_SEGMENTS", # API가 이 상태를 보고 일괄 번역 시작
+                progress=95, # STT 완료, 번역 대기 상태 (95%로 설정)
+                data=all_segments_combined # 모든 (타임스탬프 조정된) 일본어 세그먼트 리스트
+            )
 
-
-    except FileNotFoundError:
+    except FileNotFoundError: # 메인 오디오 파일 로드 실패
         logger.error(f"[Task {task_id}] Main audio file not found: {wav_file_path}")
-        send_update_to_kafka(task_id, "FAILED", error="Input audio file not found.")
-    except Exception as e:
-        logger.error(f"[Task {task_id}] Unexpected error during main processing: {e}", exc_info=True)
+        send_update_to_kafka(task_id, "FAILED", error=f"Input audio file not found: {wav_file_path}")
+    except Exception as e: # 그 외 예기치 못한 오류
+        logger.error(f"[Task {task_id}] Unexpected error during main STT processing: {e}", exc_info=True)
         send_update_to_kafka(task_id, "FAILED", error=f"An unexpected error occurred: {e}")
     finally:
-        # 최종적으로 임시 청크 디렉토리 정리 (선택적)
+        # 임시 청크 디렉토리 정리
         try:
             if chunk_output_dir.exists():
-                for p in chunk_output_dir.glob("*.wav"):
-                    os.remove(p)
-                chunk_output_dir.rmdir()
-                logger.info(f"[Task {task_id}] Cleaned up chunk directory: {chunk_output_dir}")
-        except Exception as e:
-            logger.warning(f"[Task {task_id}] Could not clean up chunk directory {chunk_output_dir}: {e}")
+                # 디렉토리 내 파일들을 먼저 삭제 (선택적: shutil.rmtree 사용 시 불필요)
+                # for p_file in chunk_output_dir.glob("*.wav"):
+                #     try:
+                #         os.remove(p_file)
+                #     except Exception as e_remove_final:
+                #         logger.warning(f"[Task {task_id}] Failed to remove chunk file {p_file} during final cleanup: {e_remove_final}")
+                # 디렉토리 삭제 (shutil.rmtree 사용 권장)
+                import shutil
+                shutil.rmtree(chunk_output_dir)
+                logger.info(f"[Task {task_id}] Successfully cleaned up chunk directory: {chunk_output_dir}")
+        except Exception as e_cleanup:
+            logger.warning(f"[Task {task_id}] Error during final cleanup of chunk directory {chunk_output_dir}: {e_cleanup}")
+
 
 # --- Kafka Consumer 루프 ---
 def run_consumer():
