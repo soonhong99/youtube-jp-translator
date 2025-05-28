@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+torch
+numpy
+soundfile
+librosa
+scipy
+coqpit
+TTS

@@ -1,0 +1,1 @@
+TTS_MODEL_NAME = "tts_models/ja/kokoro/tacotron2-DDC"

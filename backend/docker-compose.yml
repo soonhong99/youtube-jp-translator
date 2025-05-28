@@ -113,6 +113,17 @@ services:
     # -A: Celery 앱 위치 지정, worker: 워커 모드, --loglevel: 로그 레벨
     # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
     command: python src/consumer.py
+
+  # ✅ 새로 추가된 TTS 서비스
+  tts-synthesizer:
+    build: ./services/tts-synthesizer
+    ports:
+      - "8010:8000"          # 외부에서 8010 포트로 접근
+    volumes:
+      - ./services/tts-synthesizer:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+
 # 볼륨 정의
 volumes:
   kafka_data:
