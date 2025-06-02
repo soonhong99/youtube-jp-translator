@@ -114,9 +114,23 @@ services:
     # -A: Celery 앱 위치 지정, worker: 워커 모드, --loglevel: 로그 레벨
     # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
     command: python src/consumer.py
+  
+  tts-synthesizer:
+    build: ./services/tts-synthesizer
+    container_name: tts-synthesizer
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - tts_outputs:/app/outputs
+    environment:
+      - COQUI_TOS_AGREED=1
+    restart: unless-stopped
+
+
 # 볼륨 정의
 volumes:
   kafka_data:
   youtube_audio_data:
   faster_whisper_models:
   redis_data:
+  tts_outputs:
