@@ -1,13 +1,4 @@
-# PyTorch 안정 버전 (2.5.1)
-torch==2.5.1
-torchaudio==2.5.1
-
-# Coqui TTS + 일본어 + 한국어 지원
-TTS[ja,ko]==0.22.0
-
-# FastAPI 서버용
-fastapi==0.110.0
-uvicorn==0.29.0
-
-# 환경 변수 로딩
-python-dotenv==1.0.0
+fastapi
+uvicorn
+TTS[ja]
+python-dotenv

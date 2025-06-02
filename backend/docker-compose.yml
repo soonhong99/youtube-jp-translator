@@ -1,131 +1,258 @@
+# version: '3.8'
+
+# services:
+#   # Zookeeper 추가 (Kafka 의존성)
+#   zookeeper:
+#     image: confluentinc/cp-zookeeper:7.3.2 # 예시 버전, 최신 안정 버전 확인
+#     container_name: zookeeper
+#     environment:
+#       ZOOKEEPER_CLIENT_PORT: 2181
+#       ZOOKEEPER_TICK_TIME: 2000
+#     restart: unless-stopped
+
+#   # Kafka Broker 추가
+#   kafka:
+#     image: confluentinc/cp-kafka:7.3.2 # 예시 버전, Zookeeper와 버전 호환성 확인
+#     container_name: kafka
+#     depends_on:
+#       - zookeeper
+#     ports:
+#       # 외부에서 Kafka 직접 접속 시 필요 (개발/디버깅용)
+#       # - "19092:19092"
+#       - "9092:9092" # 컨테이너 간 통신용
+#     environment:
+#       KAFKA_BROKER_ID: 1
+#       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+#       # 중요: 컨테이너 외부에서 접속할 경우 advertised.listeners 설정 필요
+#       # KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:19092
+#       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092 # 컨테이너 내부 통신용 설정
+#       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT #,PLAINTEXT_HOST:PLAINTEXT
+#       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+#       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+#       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+#       # 필요한 경우 추가 Kafka 설정
+#     volumes:
+#       - kafka_data:/var/lib/kafka/data
+#     restart: unless-stopped
+
+#   # Redis 서비스 추가
+#   redis:
+#     image: redis:7-alpine # 특정 버전 사용 권장
+#     container_name: redis-stt
+#     ports:
+#       - "127.0.0.1:6379:6379" # 로컬에서만 접근하도록 설정 (보안 강화)
+#     volumes:
+#       - redis_data:/data # 데이터 영속성 (선택 사항)
+#     restart: unless-stopped
+
+#   # 기존 youtube-extractor 서비스 (변경 없음)
+#   youtube-extractor:
+#     build: ./services/youtube-extractor
+#     container_name: youtube-extractor-service
+#     ports:
+#       - "127.0.0.1:8000:8000" # 로컬에서만 접근
+#     volumes:
+#       - youtube_audio_data:/app/downloads
+#     environment:
+#       - OUTPUT_DIR=/app/downloads
+#     restart: unless-stopped
+
+#   # STT Processor API 서비스 (Celery 연동 설정 추가)
+#   stt-processor-api:
+#     build:
+#       context: ./services/stt-processor
+#       args:
+#         MODEL_SIZE: base # 빌드 시 모델 크기 지정
+#     container_name: stt-processor-api
+#     ports:
+#       - "127.0.0.1:8001:8001" # 로컬에서만 접근
+#     volumes:
+#       - youtube_audio_data:/app/downloads # 오디오 공유 볼륨
+#       - faster_whisper_models:/app/models # 모델 볼륨
+#     environment:
+#       - MODEL_DIR=/app/models
+#       - MODEL_SIZE=base
+#       - DEVICE=cpu
+#       - COMPUTE_TYPE=int8
+#       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092 # Kafka 서비스 이름:포트
+#       - REDIS_HOST=redis # Redis는 히스토리 저장용으로 남겨둠 (아래 Redis 서비스 필요)
+#       - REDIS_PORT=6379
+#       - GEMINI_API_KEY=${GEMINI_API_KEY} 
+#       - REDIS_DB_WS_MESSAGES=3
+#       - PYTHONUNBUFFERED=1
+#     depends_on: # Redis가 먼저 실행되어야 함
+#       - redis
+#       - kafka
+#     restart: unless-stopped
+#     command: uvicorn src.main:app --host 0.0.0.0 --port 8001 # --reload 옵션은 개발 시에만
+
+#   # STT Processor Celery Worker 서비스 추가
+#   stt-processor-worker:
+#     build:
+#       context: ./services/stt-processor # API와 동일한 이미지 사용
+#       args:
+#         MODEL_SIZE: base
+#     container_name: stt-processor-worker
+#     # 워커는 외부 포트 노출 불필요
+#     volumes: # API와 동일한 볼륨 마운트 필요
+#       - youtube_audio_data:/app/downloads
+#       - faster_whisper_models:/app/models
+#     environment: # API와 동일한 환경 변수 + Worker 관련 설정
+#       - MODEL_DIR=/app/models
+#       - MODEL_SIZE=base
+#       - DEVICE=cpu # 또는 cuda
+#       - COMPUTE_TYPE=int8
+#       - REDIS_HOST=redis
+#       - REDIS_PORT=6379
+#       - PYTHONUNBUFFERED=1
+#       # - NVIDIA_VISIBLE_DEVICES=all # GPU 사용 시
+#     depends_on:
+#       - kafka
+#       - stt-processor-api # API 실행 후 워커 시작 (선택 사항)
+#     restart: unless-stopped
+#     # Celery 워커 실행 명령어
+#     # -A: Celery 앱 위치 지정, worker: 워커 모드, --loglevel: 로그 레벨
+#     # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
+#     command: python src/consumer.py
+  
+#   tts-synthesizer:
+#     build: ./services/tts-synthesizer
+#     container_name: tts-synthesizer
+#     ports:
+#       - "127.0.0.1:8002:8002"
+#     volumes:
+#       - tts_outputs:/app/outputs
+#     environment:
+#       - COQUI_TOS_AGREED=1
+#     restart: unless-stopped
+
+
+# # 볼륨 정의
+# volumes:
+#   kafka_data:
+#   youtube_audio_data:
+#   faster_whisper_models:
+#   redis_data:
+#   tts_outputs:
+
+
 version: '3.8'
 
 services:
-  # Zookeeper 추가 (Kafka 의존성)
+  # Zookeeper (Kafka 종속성)
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.3.2 # 예시 버전, 최신 안정 버전 확인
+    image: confluentinc/cp-zookeeper:7.3.2
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     restart: unless-stopped
 
-  # Kafka Broker 추가
+  # Kafka Broker
   kafka:
-    image: confluentinc/cp-kafka:7.3.2 # 예시 버전, Zookeeper와 버전 호환성 확인
+    image: confluentinc/cp-kafka:7.3.2
     container_name: kafka
     depends_on:
       - zookeeper
     ports:
-      # 외부에서 Kafka 직접 접속 시 필요 (개발/디버깅용)
-      # - "19092:19092"
-      - "9092:9092" # 컨테이너 간 통신용
+      - "9092:9092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
-      # 중요: 컨테이너 외부에서 접속할 경우 advertised.listeners 설정 필요
-      # KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:19092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092 # 컨테이너 내부 통신용 설정
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT #,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      # 필요한 경우 추가 Kafka 설정
     volumes:
       - kafka_data:/var/lib/kafka/data
     restart: unless-stopped
 
-  # Redis 서비스 추가
+  # Redis (STT 히스토리 저장용)
   redis:
-    image: redis:7-alpine # 특정 버전 사용 권장
+    image: redis:7-alpine
     container_name: redis-stt
     ports:
-      - "127.0.0.1:6379:6379" # 로컬에서만 접근하도록 설정 (보안 강화)
+      - "127.0.0.1:6379:6379"
     volumes:
-      - redis_data:/data # 데이터 영속성 (선택 사항)
+      - redis_data:/data
     restart: unless-stopped
 
-  # 기존 youtube-extractor 서비스 (변경 없음)
+  # YouTube 오디오 추출 서비스 (기존)
   youtube-extractor:
     build: ./services/youtube-extractor
     container_name: youtube-extractor-service
     ports:
-      - "127.0.0.1:8000:8000" # 로컬에서만 접근
+      - "127.0.0.1:8000:8000"
     volumes:
       - youtube_audio_data:/app/downloads
     environment:
       - OUTPUT_DIR=/app/downloads
     restart: unless-stopped
 
-  # STT Processor API 서비스 (Celery 연동 설정 추가)
+  # STT Processor API (Celery 연동)
   stt-processor-api:
     build:
       context: ./services/stt-processor
       args:
-        MODEL_SIZE: base # 빌드 시 모델 크기 지정
+        MODEL_SIZE: base
     container_name: stt-processor-api
     ports:
-      - "127.0.0.1:8001:8001" # 로컬에서만 접근
+      - "127.0.0.1:8001:8001"
     volumes:
-      - youtube_audio_data:/app/downloads # 오디오 공유 볼륨
-      - faster_whisper_models:/app/models # 모델 볼륨
+      - youtube_audio_data:/app/downloads
+      - faster_whisper_models:/app/models
     environment:
       - MODEL_DIR=/app/models
       - MODEL_SIZE=base
       - DEVICE=cpu
       - COMPUTE_TYPE=int8
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092 # Kafka 서비스 이름:포트
-      - REDIS_HOST=redis # Redis는 히스토리 저장용으로 남겨둠 (아래 Redis 서비스 필요)
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - GEMINI_API_KEY=${GEMINI_API_KEY} 
       - REDIS_DB_WS_MESSAGES=3
       - PYTHONUNBUFFERED=1
-    depends_on: # Redis가 먼저 실행되어야 함
+    depends_on:
       - redis
       - kafka
     restart: unless-stopped
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8001 # --reload 옵션은 개발 시에만
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8001
 
-  # STT Processor Celery Worker 서비스 추가
+  # STT Processor Celery Worker
   stt-processor-worker:
     build:
-      context: ./services/stt-processor # API와 동일한 이미지 사용
+      context: ./services/stt-processor
       args:
         MODEL_SIZE: base
     container_name: stt-processor-worker
-    # 워커는 외부 포트 노출 불필요
-    volumes: # API와 동일한 볼륨 마운트 필요
+    volumes:
       - youtube_audio_data:/app/downloads
       - faster_whisper_models:/app/models
-    environment: # API와 동일한 환경 변수 + Worker 관련 설정
+    environment:
       - MODEL_DIR=/app/models
       - MODEL_SIZE=base
-      - DEVICE=cpu # 또는 cuda
+      - DEVICE=cpu
       - COMPUTE_TYPE=int8
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - PYTHONUNBUFFERED=1
-      # - NVIDIA_VISIBLE_DEVICES=all # GPU 사용 시
     depends_on:
       - kafka
-      - stt-processor-api # API 실행 후 워커 시작 (선택 사항)
+      - stt-processor-api
     restart: unless-stopped
-    # Celery 워커 실행 명령어
-    # -A: Celery 앱 위치 지정, worker: 워커 모드, --loglevel: 로그 레벨
-    # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
     command: python src/consumer.py
-  
+
+  # TTS Synthesizer 서비스 (새로 추가)
   tts-synthesizer:
     build: ./services/tts-synthesizer
-    container_name: tts-synthesizer
+    container_name: backend-tts-synthesizer-1
     ports:
-      - "127.0.0.1:8002:8002"
+      - "8010:8000"
     volumes:
-      - tts_outputs:/app/outputs
+      - ./services/tts-synthesizer:/app
     environment:
-      - COQUI_TOS_AGREED=1
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
-
 
 # 볼륨 정의
 volumes:
@@ -133,4 +260,3 @@ volumes:
   youtube_audio_data:
   faster_whisper_models:
   redis_data:
-  tts_outputs:

@@ -1,28 +1,14 @@
 FROM python:3.10-slim
 
-# 시스템 의존성 설치
-RUN apt-get update && apt-get install -y \
-    espeak \
-    ffmpeg \
-    && apt-get clean
-
 WORKDIR /app
 
-# .env와 requirements 복사
-
+# 1) requirements.txt 복사 후 의존성 설치
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# 파이썬 패키지 설치
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+# 2) 코드 파일 복사 (src 폴더, config 폴더)
+COPY ./src ./src
+COPY ./config ./config
 
-# 애플리케이션 코드 복사
-COPY src/ ./src
-
-# 기본 환경 변수 (컨테이너 내)
-ENV AUDIO_DIR=/tmp/tts-audio
-ENV CLEANUP_THRESHOLD_SECONDS=3600
-ENV PORT=8002
-
-# 서버 실행 (shell form으로 ENV PORT 사용)
-CMD uvicorn src.main:app --host 0.0.0.0 --port $PORT
+# 3) uvicorn으로 FastAPI 앱 실행 (컨테이너 내부 8000 포트)
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
