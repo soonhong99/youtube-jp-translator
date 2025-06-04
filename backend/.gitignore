@@ -87,3 +87,6 @@ tmp/
 # --- Dependencies (covered by venv usually) ---
 pip-log.txt
 pip-delete-this-directory.txt
+
+
+echo "services/tts-synthesizer/audio/" >> ../.gitignore
