@@ -387,7 +387,7 @@ const TranslateResult = () => {
 
         // 1) 오디오 추출
         const extractRes = await axios.post(
-          `${process.env.REACT_APP_EXTRACTOR_API_URL}/extract`,
+          `${process.env.REACT_APP_API_GATEWAY_URL}/api/youtube/extract`,
           {
             youtube_url: youtubeUrl,
             output_format: 'wav',
@@ -401,7 +401,7 @@ const TranslateResult = () => {
         // 2) STT 요청
         setStatus('자막 생성 중...');
         const sttRes = await axios.post(
-          `${process.env.REACT_APP_STT_API_URL}/request_transcription`,
+          `${process.env.REACT_APP_API_GATEWAY_URL}/api/stt/transcribe`,
           {
             wav_file_path: filePath,
             language: 'ja',
@@ -410,7 +410,9 @@ const TranslateResult = () => {
         const taskId = sttRes.data.task_id;
 
         // 3) WebSocket 연결
-        const ws = new WebSocket(`${process.env.REACT_APP_WS_BASE_URL}/ws/${taskId}`);
+        const ws = new WebSocket(
+          `${process.env.REACT_APP_WS_BASE_URL}/ws/${taskId}`
+        );
         socketRef.current = ws;
 
         ws.onmessage = (event) => {
@@ -421,24 +423,8 @@ const TranslateResult = () => {
 
           if (msg.data && Array.isArray(msg.data)) {
             if (msg.status === 'COMPLETED') {
-              setSegments((prevSegments) => {
-                const translatedMap = new Map(
-                  msg.data.map((translatedSeg) => [
-                    `${translatedSeg.start}-${translatedSeg.end}`,
-                    translatedSeg.korean_text || ''
-                  ])
-                );
-                return prevSegments.map((origSeg) => {
-                  const key = `${origSeg.start}-${origSeg.end}`;
-                  if (translatedMap.has(key)) {
-                    return {
-                      ...origSeg,
-                      korean_text: translatedMap.get(key)
-                    };
-                  }
-                  return origSeg;
-                });
-              });
+              // 백엔드에서 완전한 세그먼트 데이터(일본어 + 한국어)를 받으므로 직접 설정
+              setSegments(msg.data);
               setLoading(false);
               setShowPopup(true);
             } else {

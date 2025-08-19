@@ -4,6 +4,11 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # 2. 시스템 의존성 설치 (필요 시)
 # 예: 오디오 처리를 위한 ffmpeg (youtube-extractor에 이미 있다면 생략 가능)
 # RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && \

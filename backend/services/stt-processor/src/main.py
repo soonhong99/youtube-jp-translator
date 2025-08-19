@@ -20,10 +20,6 @@ from .kafka_config import KAFKA_BOOTSTRAP_SERVERS, STT_REQUEST_TOPIC, STT_RESULT
 from .ws_manager import manager
 from .redis_client import get_redis_client, get_message_ttl # Redis는 히스토리용으로 유지
 
-import strawberry
-from strawberry.fastapi import GraphQLRouter
-from strawberry.types import Info
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -257,7 +253,7 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                 logger.debug(f"[Thread][Task {task_id}] Raw message data payload: {result_data.get('data')}")
 
                 # --- 핵심 로직: 상태에 따라 분기 처리 ---
-                if current_status == "STT_COMPLETED_ALL_SEGMENTS":
+                if current_status == "STT_COMPLETED_ALL_SEGMENTS" or current_status == "COMPLETED":
                     # 워커가 모든 STT 처리를 완료하고 전체 일본어 세그먼트를 보낸 경우
                     stt_segments = result_data.get("data")
                     
@@ -363,7 +359,7 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                 # --- 최종 메시지 전송 및 저장 (모든 상태 공통) ---
                 # result_data는 위 분기에서 상태, 진행률, 데이터(번역 포함 또는 미포함)가 업데이트 되었음
                 if main_loop and main_loop.is_running():
-                    logger.debug(f"[Thread][Task {task_id}] Scheduling WebSocket send with final status: {result_data.get('status')}, progress: {result_data.get('progress')}")
+                    logger.info(f"[Thread][Task {task_id}] Scheduling WebSocket send with final status: {result_data.get('status')}, progress: {result_data.get('progress')}")
                     asyncio.run_coroutine_threadsafe(
                         _send_ws_update_async(
                             task_id,
@@ -403,6 +399,49 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
         logger.info("Closing Kafka Consumer in thread.")
         if consumer:
             consumer.close()
+
+# Health check 엔드포인트 추가
+@app.get("/health")
+async def health_check():
+    """헬스체크 엔드포인트"""
+    health_status = {
+        "status": "healthy",
+        "service": "stt-processor-api",
+        "timestamp": time.time()
+    }
+    
+    # Kafka 연결 상태 확인
+    if producer:
+        health_status["kafka_producer"] = "connected"
+    else:
+        health_status["kafka_producer"] = "disconnected"
+        health_status["status"] = "degraded"
+    
+    # Redis 연결 상태 확인
+    redis_client = get_redis_client()
+    if redis_client:
+        try:
+            redis_client.ping()
+            health_status["redis"] = "connected"
+        except:
+            health_status["redis"] = "disconnected"
+            health_status["status"] = "degraded"
+    else:
+        health_status["redis"] = "disconnected"
+        health_status["status"] = "degraded"
+    
+    # 모델 로드 상태 확인
+    if gemini_translation_model:
+        health_status["gemini_model"] = "loaded"
+    else:
+        health_status["gemini_model"] = "not_loaded"
+        # Gemini는 선택적이므로 degraded로만 표시
+    
+    # unhealthy 상태면 503 반환
+    if health_status["status"] == "unhealthy":
+        raise HTTPException(status_code=503, detail=health_status)
+    
+    return health_status
 
 # --- 앱 시작 시 Kafka Consumer 스레드 실행 ---
 @app.on_event("startup")
@@ -501,8 +540,10 @@ async def _send_ws_update_async(task_id: str, status: str, progress: int = None,
     if data is not None: message["data"] = data
     if error is not None: message["error"] = error
     try:
+        logger.info(f"[Task {task_id}] Attempting to send WebSocket message: status={status}, data_length={len(data) if data and isinstance(data, list) else 'N/A'}")
         if manager:
             await manager.send_json_message(task_id, message)
+            logger.info(f"[Task {task_id}] Successfully sent WebSocket message with status: {status}")
         else:
             logger.warning(f"[Task {task_id}] WebSocket manager not available, skipping live send.")
     except Exception as e:

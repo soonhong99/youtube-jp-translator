@@ -1,130 +1,311 @@
 version: '3.8'
 
 services:
-  # Zookeeper 추가 (Kafka 의존성)
+  # ==================== Message Queue Services ====================
+  
+  # Zookeeper (Kafka 의존성)
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.3.2 # 예시 버전, 최신 안정 버전 확인
+    image: confluentinc/cp-zookeeper:7.3.2
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
     restart: unless-stopped
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo 'ruok' | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Kafka Broker 추가
+  # Kafka Broker
   kafka:
-    image: confluentinc/cp-kafka:7.3.2 # 예시 버전, Zookeeper와 버전 호환성 확인
+    image: confluentinc/cp-kafka:7.3.2
     container_name: kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
-      # 외부에서 Kafka 직접 접속 시 필요 (개발/디버깅용)
-      # - "19092:19092"
-      - "9092:9092" # 컨테이너 간 통신용
+      - "127.0.0.1:9092:9092"  # 로컬 개발용 (보안 강화)
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
-      # 중요: 컨테이너 외부에서 접속할 경우 advertised.listeners 설정 필요
-      # KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:19092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092 # 컨테이너 내부 통신용 설정
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT #,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      # 필요한 경우 추가 Kafka 설정
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 168  # 7일
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824  # 1GB
     volumes:
       - kafka_data:/var/lib/kafka/data
     restart: unless-stopped
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Redis 서비스 추가
+  # Kafka 토픽 초기화 서비스
+  kafka-init:
+    image: confluentinc/cp-kafka:7.3.2
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      echo 'Waiting for Kafka to be ready...'
+      sleep 10
+      
+      echo 'Creating Kafka topics...'
+      kafka-topics --create --if-not-exists --topic stt_requests --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic stt_results --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      
+      echo 'Listing topics...'
+      kafka-topics --list --bootstrap-server kafka:9092
+      
+      echo 'Topics created successfully!'
+      "
+    networks:
+      - backend-network
+    restart: "no"  # 한 번만 실행
+
+  # Redis (WebSocket 메시지 히스토리용)
   redis:
-    image: redis:7-alpine # 특정 버전 사용 권장
+    image: redis:7-alpine
     container_name: redis-stt
     ports:
-      - "127.0.0.1:6379:6379" # 로컬에서만 접근하도록 설정 (보안 강화)
+      - "127.0.0.1:6379:6379"
     volumes:
-      - redis_data:/data # 데이터 영속성 (선택 사항)
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     restart: unless-stopped
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # 기존 youtube-extractor 서비스 (변경 없음)
+  # ==================== API Gateway ====================
+  
+  api-gateway:
+    build: ./services/api-gateway
+    container_name: api-gateway
+    ports:
+      - "8080:8080"  # 외부에서 접근 가능한 유일한 포트
+    environment:
+      - YOUTUBE_EXTRACTOR_URL=http://youtube-extractor:8000
+      - STT_PROCESSOR_URL=http://stt-processor-api:8001
+      # - TTS_SYNTHESIZER_URL=http://tts-synthesizer:8003  # TTS 서비스 준비되면 활성화
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+      - RATE_LIMIT_CALLS=100
+      - RATE_LIMIT_PERIOD=60
+    depends_on:
+      - youtube-extractor
+      - stt-processor-api
+      - redis
+    restart: unless-stopped
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==================== Core Services ====================
+  
+  # YouTube Audio Extractor Service
   youtube-extractor:
     build: ./services/youtube-extractor
     container_name: youtube-extractor-service
-    ports:
-      - "127.0.0.1:8000:8000" # 로컬에서만 접근
+    # 포트 노출 제거 (API Gateway를 통해서만 접근)
     volumes:
       - youtube_audio_data:/app/downloads
     environment:
       - OUTPUT_DIR=/app/downloads
+      - LOG_LEVEL=INFO
     restart: unless-stopped
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # STT Processor API 서비스 (Celery 연동 설정 추가)
+  # STT Processor API Service
   stt-processor-api:
     build:
       context: ./services/stt-processor
       args:
-        MODEL_SIZE: base # 빌드 시 모델 크기 지정
+        MODEL_SIZE: base
     container_name: stt-processor-api
-    ports:
-      - "127.0.0.1:8001:8001" # 로컬에서만 접근
+    # 포트 노출 제거 (API Gateway를 통해서만 접근)
     volumes:
-      - youtube_audio_data:/app/downloads # 오디오 공유 볼륨
-      - faster_whisper_models:/app/models # 모델 볼륨
+      - youtube_audio_data:/app/downloads
+      - faster_whisper_models:/app/models
     environment:
       - MODEL_DIR=/app/models
       - MODEL_SIZE=base
       - DEVICE=cpu
       - COMPUTE_TYPE=int8
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092 # Kafka 서비스 이름:포트
-      - REDIS_HOST=redis # Redis는 히스토리 저장용으로 남겨둠 (아래 Redis 서비스 필요)
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - GEMINI_API_KEY=${GEMINI_API_KEY} 
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - REDIS_DB_WS_MESSAGES=3
       - PYTHONUNBUFFERED=1
-    depends_on: # Redis가 먼저 실행되어야 함
-      - redis
-      - kafka
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:  # 토픽 생성 완료 후 시작
+        condition: service_completed_successfully
     restart: unless-stopped
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8001 # --reload 옵션은 개발 시에만
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8001
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # STT Processor Celery Worker 서비스 추가
+  # STT Processor Worker (Kafka Consumer)
   stt-processor-worker:
     build:
-      context: ./services/stt-processor # API와 동일한 이미지 사용
+      context: ./services/stt-processor
       args:
         MODEL_SIZE: base
     container_name: stt-processor-worker
-    # 워커는 외부 포트 노출 불필요
-    volumes: # API와 동일한 볼륨 마운트 필요
+    volumes:
       - youtube_audio_data:/app/downloads
       - faster_whisper_models:/app/models
-    environment: # API와 동일한 환경 변수 + Worker 관련 설정
+      - /tmp/stt-chunks:/tmp  # 청크 임시 저장용
+    environment:
       - MODEL_DIR=/app/models
       - MODEL_SIZE=base
-      - DEVICE=cpu # 또는 cuda
+      - DEVICE=cpu
       - COMPUTE_TYPE=int8
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - PYTHONUNBUFFERED=1
-      # - NVIDIA_VISIBLE_DEVICES=all # GPU 사용 시
+      - LOG_LEVEL=INFO
+      - MAX_WORKERS=4  # 병렬 처리 워커 수
     depends_on:
-      - kafka
-      - stt-processor-api # API 실행 후 워커 시작 (선택 사항)
+      kafka:
+        condition: service_healthy
+      stt-processor-api:
+        condition: service_healthy
     restart: unless-stopped
-    # Celery 워커 실행 명령어
-    # -A: Celery 앱 위치 지정, worker: 워커 모드, --loglevel: 로그 레벨
-    # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
-    command: python src/consumer.py
+    command: python -m src.worker  # consumer.py 대신 worker.py 실행
+    networks:
+      - backend-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
 
+  # ==================== Future Services (Currently Disabled) ====================
+  
+  # TTS Synthesizer Service (개발 중단 상태)
   # tts-synthesizer:
   #   build: ./services/tts-synthesizer
-  #   ports:
-  #     - "8003:8003"
+  #   container_name: tts-synthesizer
   #   volumes:
   #     - ./services/tts-synthesizer/audio:/app/audio
+  #   environment:
+  #     - LOG_LEVEL=INFO
+  #   restart: unless-stopped
+  #   networks:
+  #     - backend-network
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
 
-# 볼륨 정의
+  # ==================== Monitoring & Management (Optional) ====================
+  
+  # Kafka UI for monitoring (개발 환경용)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "127.0.0.1:8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      - kafka
+      - zookeeper
+    restart: unless-stopped
+    networks:
+      - backend-network
+    profiles:
+      - monitoring  # docker-compose --profile monitoring up 으로 실행
+
+  # Redis Commander for monitoring (개발 환경용)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    ports:
+      - "127.0.0.1:8091:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - backend-network
+    profiles:
+      - monitoring  # docker-compose --profile monitoring up 으로 실행
+
+# ==================== Networks ====================
+networks:
+  backend-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ==================== Volumes ====================
 volumes:
+  # Kafka & Zookeeper
   kafka_data:
-  youtube_audio_data:
-  faster_whisper_models:
+    driver: local
+  zookeeper_data:
+    driver: local
+  zookeeper_logs:
+    driver: local
+  
+  # Redis
   redis_data:
+    driver: local
+  
+  # Application Data
+  youtube_audio_data:
+    driver: local
+  faster_whisper_models:
+    driver: local
