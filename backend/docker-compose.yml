@@ -115,12 +115,12 @@ services:
     # -c: 동시성 (Worker 프로세스 수). CPU bound 작업은 CPU 코어 수, GPU 작업은 보통 1
     command: python src/consumer.py
 
-  tts-synthesizer:
-    build: ./services/tts-synthesizer
-    ports:
-      - "8003:8003"
-    volumes:
-      - ./services/tts-synthesizer/audio:/app/audio
+  # tts-synthesizer:
+  #   build: ./services/tts-synthesizer
+  #   ports:
+  #     - "8003:8003"
+  #   volumes:
+  #     - ./services/tts-synthesizer/audio:/app/audio
 
 # 볼륨 정의
 volumes:

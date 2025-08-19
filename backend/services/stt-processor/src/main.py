@@ -20,6 +20,10 @@ from .kafka_config import KAFKA_BOOTSTRAP_SERVERS, STT_REQUEST_TOPIC, STT_RESULT
 from .ws_manager import manager
 from .redis_client import get_redis_client, get_message_ttl # Redis는 히스토리용으로 유지
 
+import strawberry
+from strawberry.fastapi import GraphQLRouter
+from strawberry.types import Info
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -202,7 +206,7 @@ async def translate_batched_japanese_to_korean_with_gemini(
 app = FastAPI(title="Kafka-based STT Processor API", version="0.3.0")
 # ... (CORS 미들웨어 설정은 이전과 동일하게 추가) ...
 from fastapi.middleware.cors import CORSMiddleware
-origins = ["http://localhost", "http://localhost:3000"]
+origins = ["http://localhost", "http://localhost:3000", "http://localhost:3003"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- API 모델 정의 ---

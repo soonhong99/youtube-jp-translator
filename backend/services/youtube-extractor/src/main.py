@@ -21,6 +21,7 @@ app = FastAPI(title="YouTube Audio Extractor Service")
 origins = [
     "http://localhost",
     "http://localhost:3000", # React 앱 실행 주소
+    "http://localhost:3003", # STT Processor 앱 실행 주소
     # 필요시 다른 허용할 출처 추가
 ]
 
