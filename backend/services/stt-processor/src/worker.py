@@ -17,6 +17,7 @@ from .kafka_config import (
     STT_REQUEST_TOPIC, 
     STT_RESULT_TOPIC
 )
+from .gemini_config import get_gemini_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -66,14 +67,15 @@ class STTWorker:
     
     def _init_gemini(self):
         """Gemini API 초기화"""
-        api_key = os.getenv("GEMINI_API_KEY")
-        if api_key:
-            genai.configure(api_key=api_key)
-            self.gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            logger.info("Gemini model initialized")
-        else:
-            self.gemini_model = None
-            logger.warning("Gemini API key not found")
+        self.gemini_config = get_gemini_config()
+        self.gemini_model = self.gemini_config.model_instance
+        
+        # 모델 정보 로깅
+        model_info = self.gemini_config.get_model_info()
+        logger.info(f"Worker Gemini configuration: {model_info}")
+        
+        if not self.gemini_config.is_available():
+            logger.warning("Gemini translation model is not available in worker. Translation will be disabled.")
     
     def send_update(self, task_id: str, status: str, progress: int = None, 
                    data: Any = None, error: str = None):
@@ -116,31 +118,39 @@ class STTWorker:
     
     async def translate_batch(self, texts: List[str]) -> List[str]:
         """일괄 번역 (비동기)"""
-        if not self.gemini_model or not texts:
+        if not self.gemini_config.is_available() or not texts:
             return ["[번역 불가]"] * len(texts)
         
         separator = "[SEG]"
         combined = f"\n{separator}\n".join(texts)
         
-        prompt = f"""일본어를 한국어로 번역하세요. 각 문장은 "{separator}"로 구분됩니다.
+        # 프롬프트 엔지니어링 개선
+        prompt = f"""다음은 유튜브에서 추출한 일본어 음성을 텍스트로 변환한 결과입니다. 
+        각 문장은 "{separator}"로 구분되어 있습니다.
+        매우 자연스러운 한국어 구어체로 번역하되, 원문의 뉘앙스와 감정을 그대로 전달해주세요.
         
-        일본어:
+        일본어 원문:
         {combined}
         
-        한국어:"""
+        한국어 번역:"""
         
         try:
+            # 설정된 temperature 사용
+            generation_config = self.gemini_config.get_generation_config()
             response = await self.gemini_model.generate_content_async(
                 prompt,
-                generation_config=genai.types.GenerationConfig(temperature=0.7)
+                generation_config=generation_config
             )
             
             if response.parts:
                 translated = response.text.strip().split(f"{separator}\n")
                 if len(translated) == len(texts):
+                    logger.info(f"Batch translation successful: {len(texts)} segments translated using {self.gemini_config.model_name}")
                     return translated
+                else:
+                    logger.warning(f"Translation segment count mismatch: expected {len(texts)}, got {len(translated)}")
         except Exception as e:
-            logger.error(f"Translation error: {e}")
+            logger.error(f"Translation error with model {self.gemini_config.model_name}: {e}")
         
         return ["[번역 오류]"] * len(texts)
     

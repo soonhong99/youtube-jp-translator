@@ -1,209 +1,319 @@
-# YouTube 일본어 STT 및 번역 시스템
+# 🎌🔄🇰🇷 AI-Powered YouTube Japanese Translation System
 
 ## 목차
 1. [프로젝트 개요](#1-프로젝트-개요)
-2. [시스템 아키텍처](#2-시스템-아키텍처)
-3. [기술 스택](#3-기술-스택)
-4. [주요 기능](#4-주요-기능-현재)
+2. [주요 특징](#2-주요-특징)
+3. [시스템 아키텍처](#3-시스템-아키텍처)
+4. [비용 분석](#4-비용-분석)
 5. [설치 및 실행 방법](#5-설치-및-실행-방법)
-6. [향후 계획: 번역 모델 서빙](#6-향후-계획-번역-모델-서빙-seldon-core)
+6. [API 사용법](#6-api-사용법)
+7. [문제 해결](#7-문제-해결)
+8. [기술 스택](#8-기술-스택)
 
 ## 1. 프로젝트 개요
 
-본 프로젝트는 YouTube 비디오에서 일본어 음성을 추출하고, Speech-to-Text(STT) 기술을 활용해 텍스트로 변환한 후 최종적으로 한국어로 번역하는 통합 시스템입니다.
+**차세대 AI 기반 YouTube 일본어 번역 시스템**으로, 단순한 STT + 번역을 넘어 **지능형 AI 에이전트 오케스트레이션**을 도입한 혁신적인 번역 플랫폼입니다.
 
-현재는 일본어 STT 기능과 실시간 결과 확인을 위한 백엔드 파이프라인, 그리고 React 기반 프론트엔드 클라이언트까지 구현되어 있습니다.
+**Gemini 2.5 Pro/1.5 Flash** 모델을 활용한 4개의 전문 AI 에이전트가 협력하여 **콘텐츠 분석, 화자 인식, 품질 검증, 자막 포맷팅** 등 종합적인 AI 워크플로우를 제공합니다.
 
-## 2. 시스템 아키텍처
+### ✨ **핵심 혁신사항:**
+- 🤖 **4개 전문 AI 에이전트**: Translator, Summarizer, Formatter, Reviewer
+- ⚡ **4가지 처리 모드**: Fast/Standard/Premium/Custom with 자동 fallback
+- 💰 **비용 최적화**: Flash 모델 사용 시 10분 영상 단 4원
+- 🔄 **실시간 처리**: WebSocket 기반 실시간 진행률 모니터링
 
-시스템 전체 흐름도:
+## 2. 주요 특징
+
+### 🤖 **4개 전문 AI 에이전트**
+- **🌐 TranslatorAgent**: 
+  - 일본어↔한국어 고품질 번역
+  - 배치 처리 최적화
+  - 문맥 인식 번역
+  
+- **📊 SummarizerAgent**: 
+  - 콘텐츠 요약 및 키워드 추출
+  - 감성 분석 및 토픽 분류
+  - 하이라이트 구간 자동 추출
+  
+- **🎨 FormatterAgent**: 
+  - 자막 포맷팅 및 줄바꿈 최적화
+  - 화자 인식 및 대화 구조 분석
+  - 가독성 향상 처리
+  
+- **⭐ ReviewerAgent**: 
+  - 번역 품질 자동 평가
+  - 일관성 검토 및 개선 제안
+  - 용어집 검증
+
+### ⚡ **4가지 처리 모드**
+| 모드 | 처리 시간 | 기능 | 비용 |
+|------|-----------|------|------|
+| **🚀 Fast** | ~30초 | 기본 번역만 | 최저 |
+| **📈 Standard** | ~60초 | 번역 + 기본 후처리 | 중간 |
+| **💎 Premium** | ~120초 | 모든 AI 기능 활성화 | 최고품질 |
+| **🎛️ Custom** | 가변 | 사용자 정의 워크플로우 | 선택적 |
+
+## 3. 시스템 아키텍처
 
 ```mermaid
----
-config:
-  layout: fixed
----
 flowchart TD
- subgraph subGraph0["실시간 업데이트 및 히스토리"]
-        Redis[("Redis: History")]
-        STTAPI_Consume(("STT API BG Consumer"))
-        STTAPI_WS(("STT API WS Endpoint"))
-  end
-    User(["User"]) -- 1 URL 입력 --> Frontend(["React Frontend :3000"])
-    Frontend -- 2 오디오 추출 요청 --> Extractor(["Extractor API :8000"])
-    Extractor -- 3 WAV 저장 --> Volume[("Audio Volume")]
-    Extractor -- 4 파일 경로 응답 --> Frontend
-    Frontend -- 5 STT 요청 --> STTAPI(["STT API :8001"])
-    STTAPI -- 6 Kafka 요청 발행 --> KafkaRequests[("Kafka: stt_requests")]
-    STTAPI -- 7 작업 ID & WS URL 응답 --> Frontend
-    Frontend -- 8 WebSocket 연결 --> STTAPI_WS
-    KafkaRequests -- 10 작업 메시지 수신 --> STTWorker(["STT Worker"])
-    Volume -- 11 WAV 파일 읽기 --> STTWorker
-    STTWorker -- 12 STT 처리 & 결과 발행 --> KafkaResults[("Kafka: stt_results")]
-    KafkaResults -- 13 결과 메시지 수신 --> STTAPI_Consume
-    STTAPI_Consume -- 14 Redis에 결과 저장 --> Redis
-    STTAPI_Consume -- 15 WebSocket으로 전달 --> STTAPI_WS
-    Redis -- 9 과거 메시지 조회 --> STTAPI_WS
-    STTAPI_WS -- 9, 15 상태/결과 전송 --> Frontend
-    Frontend -- 16 결과 표시 --> User
-
+    A[👤 사용자] --> B[🌐 React Frontend :3000]
+    B --> C[🚪 API Gateway :8080]
+    
+    C --> D[🎬 YouTube Extractor]
+    C --> E[🎤 STT Processor :8001]  
+    C --> F[🤖 AI Orchestrator :8002]
+    
+    E --> G[⚙️ STT Worker]
+    F --> H[🔄 AI Worker]
+    
+    G --> I[📨 Kafka Topics]
+    H --> I
+    I --> J[💾 Redis Cache]
+    
+    F --> K[🌐 TranslatorAgent]
+    F --> L[📊 SummarizerAgent]
+    F --> M[🎨 FormatterAgent] 
+    F --> N[⭐ ReviewerAgent]
+    
+    K --> O[🧠 Gemini 2.5 Pro/1.5 Flash]
+    L --> O
+    M --> O
+    N --> O
+    
+    subgraph "📊 처리 모드"
+        P[🚀 Fast ~30s]
+        Q[📈 Standard ~60s]
+        R[💎 Premium ~120s]
+        S[🎛️ Custom]
+    end
 ```
 
-### 시스템 흐름 설명:
+1. **🎬 오디오 추출**: YouTube URL → 오디오 WAV 파일 추출
+2. **🎤 STT 처리**: 오디오 → 일본어 텍스트 변환 (Faster-Whisper)
+3. **🤖 AI 오케스트레이션**: STT 결과 → AI 에이전트 처리
+   - **🚀 Fast Mode**: TranslatorAgent만 실행
+   - **📈 Standard Mode**: Translation + 기본 후처리
+   - **💎 Premium Mode**: 모든 에이전트 + 품질 검증
+   - **🎛️ Custom Mode**: 사용자 정의 워크플로우
+4. **📡 실시간 업데이트**: WebSocket을 통한 진행상황 전송
+5. **💾 결과 저장**: Redis 캐싱 + Kafka 메시지 큐
 
-1. **사용자 요청 및 오디오 추출**:
-   - 사용자가 YouTube URL을 입력하면 리액트 클라이언트가 유튜브 추출기 서비스로 요청 전송
-   - 추출기 서비스는 해당 영상에서 오디오를 추출하여 WAV 파일로 저장하고 파일 경로 반환
+## 4. 비용 분석
 
-2. **STT 작업 처리**:
-   - 클라이언트는 추출된 오디오 파일 경로로 STT API에 작업 요청
-   - STT API는 고유 작업 ID를 생성하고 Kafka의 `stt_requests` 토픽에 작업 발행
-   - STT producer는 Kafka에서 작업을 받아 오디오를 청크 단위로 분할하고 STT 처리
+### 💰 **10분 동영상 번역 비용 (언어별)**
 
-3. **실시간 결과 전송**:
-   - producer는 처리 진행률과 결과를 Kafka의 `stt_results` 토픽에 발행
-   - API 서비스의 백그라운드 consumer가 결과를 수신하여 웹소켓을 통해 클라이언트로 전송
-   - 동시에 Redis에 메시지 히스토리 저장 (늦은 접속 클라이언트 지원)
+| 언어 | Gemini 2.5 Pro | Gemini 1.5 Pro | Gemini 1.5 Flash | 추천 |
+|------|----------------|----------------|------------------|------|
+| **일본어** | ~₩91 | ~₩32 | **~₩4** | ⭐ Flash |
+| **영어** | ~₩83 | ~₩29 | **~₩3.5** | ⭐ Flash |
+| **스페인어** | ~₩87 | ~₩30 | **~₩3.8** | ⭐ Flash |
 
-4. **향후 번역 기능 (예정)**:
-   - STT 처리된 일본어 텍스트는 번역 서비스로 전달
-   - 번역 서비스는 Seldon Core로 구축된 번역 모델에 요청하여 한국어로 변환
-   - 번역 결과는 Kafka를 통해 웹소켓 관리자로 전달되어 클라이언트에게 실시간 제공
+### 📊 **대용량 처리 비용 (100개 영상 = 1,000분)**
+- **Gemini 2.5 Pro**: ₩9,100 (최고 품질)
+- **Gemini 1.5 Pro**: ₩3,200 (균형 잡힌 선택)  
+- **Gemini 1.5 Flash**: **₩380** (비용 효율적, 권장 ⭐)
 
-### 주요 구성 요소:
+### ⚠️ **Free Tier 제한사항**
+- **일일 요청**: 1,500개
+- **분당 요청**: 15개 (RPM)
+- **분당 토큰**: 1M개 (TPM)
 
-#### Frontend (`frontend`):
-- React 기반 웹 애플리케이션
-- YouTube URL 입력 및 결과 표시 인터페이스
-- WebSocket을 통한 실시간 업데이트 수신
-
-#### Backend Services (`backend/services`):
-
-- **`youtube-extractor`**: 
-  - YouTube URL에서 음성 추출 담당
-  - FastAPI 기반 서비스
-  - 추출된 WAV 파일을 공유 볼륨에 저장
-
-- **`stt-processor-api`**: 
-  - 사용자 요청 접수 및 작업 ID 발급
-  - Kafka 토픽으로 작업 발행
-  - WebSocket 연결 관리 및 실시간 결과 전송
-  - Redis에 처리 결과 히스토리 저장
-
-- **`stt-processor-worker`**:
-  - Kafka Consumer로 작업 수신
-  - 오디오 분할 및 STT 처리
-  - 진행 상황과 결과를 Kafka로 발행
-
-#### Infrastructure:
-- **`Kafka` + `Zookeeper`**: 비동기 메시지 큐
-- **`Redis`**: WebSocket 메시지 히스토리 저장소
-
-## 3. 기술 스택
-
-### Backend:
-- **Python**: 주요 개발 언어
-- **FastAPI**: 고성능 비동기 API 서버 및 WebSocket 서버
-- **Apache Kafka**: 비동기 메시지 큐
-- **Redis**: 인메모리 데이터 저장
-- **Faster-Whisper**: STT 모델
-- **Pydub**: 오디오 파일 처리
-
-### Frontend:
-- **React**: UI 컴포넌트 관리
-- **JavaScript (ES6+)**: 프론트엔드 로직
-- **WebSocket API**: 실시간 업데이트 수신
-- **Axios/Fetch API**: HTTP 요청 처리
-
-### Infrastructure:
-- **Docker/Docker Compose**: 컨테이너화 및 서비스 오케스트레이션
-- **Git/GitHub**: 버전 관리 및 협업
-
-## 4. 주요 기능 (현재)
-
-- YouTube URL에서 일본어 오디오 추출
-- Kafka 기반 비동기 STT 작업 처리
-- 오디오 자동 분할 및 청크 단위 STT 처리
-- WebSocket을 통한 실시간 진행률 및 결과 전송
-- 타임스탬프가 포함된 텍스트 세그먼트 제공
-- Redis 기반 메시지 히스토리 관리
-- 직관적인 웹 인터페이스
+**💡 권장사항**: 개발/테스트는 Flash 모델, 상용 서비스는 Pro 모델 사용
 
 ## 5. 설치 및 실행 방법
 
-### 사전 요구 사항:
-- [Docker](https://www.docker.com/products/docker-desktop/) 및 [Docker Compose](https://docs.docker.com/compose/install/)
-- [Node.js](https://nodejs.org/) 및 [npm](https://www.npmjs.com/)/[yarn](https://yarnpkg.com/)
+### 🔧 **1단계: 환경 준비**
 
-### 백엔드 실행:
+**사전 요구사항:**
+- [Docker](https://www.docker.com/) & Docker Compose
+- [Node.js](https://nodejs.org/) & npm
+- **Gemini API Key** ([Google AI Studio](https://aistudio.google.com/))
+
+### ⚙️ **2단계: 시스템 설정**
+
 ```bash
-# 백엔드 디렉토리로 이동
+# 저장소 클론
+git clone https://github.com/soonhong99/youtube-jp-translator.git
+cd youtube-jp-translator
+
+# 백엔드 환경변수 설정
 cd backend
-
-# Docker 이미지 빌드 (최초 실행 시 또는 변경사항 있을 때)
-docker-compose build
-
-# 주의사항: docker desktop을 끄거나 서버를 껐을 경우, 해당 명령어를 필수적으로 입력해주십시오. (웹소켓 꼬임 현상, 향후 해결 필요)
-docker-compose down -v
-
-# 모든 백엔드 서비스 시작
-docker-compose up -d
-
-# 로그 확인 (선택사항)
-docker-compose logs -f
+echo 'GEMINI_API_KEY="your_gemini_api_key_here"' > .env
+echo 'GEMINI_MODEL=gemini-1.5-flash-latest' >> .env
+echo 'GEMINI_TEMPERATURE=0.3' >> .env
 ```
 
-### 프론트엔드 실행:
+### 🚀 **3단계: 서비스 시작**
+
 ```bash
-# 프론트엔드 디렉토리로 이동
-cd frontend
+# 백엔드 서비스 시작 (필수 순서)
+cd backend
+docker-compose down -v    # 초기화 (중요!)
+docker-compose build      # 이미지 빌드
+docker-compose up -d      # 모든 서비스 시작
 
-# 필요한 패키지 설치 (최초 실행 시)
+# 서비스 상태 확인
+docker-compose ps
+
+# 프론트엔드 시작
+cd ../frontend
 npm install
-# 또는
-yarn install
-
-# 개발 서버 실행
 npm start
-# 또는
-yarn start
 ```
 
-### 환경 설정 (선택사항):
-`frontend` 디렉토리에 `.env` 파일을 생성하여 API 주소 설정:
+### 🌐 **4단계: 접속**
+
+- **웹 인터페이스**: http://localhost:3000
+- **API Gateway**: http://localhost:8080
+- **Kafka UI** (모니터링): http://localhost:8090
+- **Redis Commander** (모니터링): http://localhost:8091
+
+## 6. API 사용법
+
+### 🤖 **AI 번역 처리**
+
+```bash
+# 기본 번역 (Fast Mode)
+curl -X POST http://localhost:8080/api/ai/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "demo-123",
+    "segments": [
+      {
+        "text": "こんにちは、元気ですか？",
+        "start": 0.0,
+        "end": 3.0,
+        "segment_index": 0
+      }
+    ],
+    "mode": "fast"
+  }'
 ```
-REACT_APP_EXTRACTOR_API_URL=http://127.0.0.1:8000
-REACT_APP_STT_API_URL=http://127.0.0.1:8001
-REACT_APP_WS_BASE_URL=ws://127.0.0.1:8001
+
+### 💎 **프리미엄 처리**
+
+```bash
+curl -X POST http://localhost:8080/api/ai/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "premium-demo",
+    "segments": [...],
+    "mode": "premium",
+    "options": {
+      "highlight_count": 5,
+      "enable_speaker_detection": true,
+      "parallel_processing": true
+    }
+  }'
 ```
 
-### 애플리케이션 사용:
-1. 웹 브라우저에서 `http://localhost:3000` 접속
-2. YouTube URL 입력
-3. "Start Transcription" 버튼 클릭
-4. 실시간으로 처리 과정 및 결과 확인
+### 📊 **AI 에이전트 상태 확인**
 
-## 6. 향후 계획: 번역 모델 서빙 (Seldon Core)
+```bash
+curl http://localhost:8080/api/ai/agents/status
+```
 
-STT 기능에 이어 일본어에서 한국어로의 번역 기능을 추가할 예정입니다. 이를 위해 Seldon Core를 활용한 모델 서빙 전략을 도입할 계획입니다.
+## 7. 문제 해결
 
-### Seldon Core 도입 로드맵:
+### 🚨 **일반적인 문제들**
 
-1. **번역 모델 선택/학습**: 일본어-한국어 번역에 적합한 모델 준비
-2. **Python Wrapper 개발**: Seldon Core와 통합을 위한 인터페이스 구현
-3. **모델 아티팩트 관리**: 클라우드 스토리지 또는 쿠버네티스 PV에 모델 저장
-4. **추론 서버 이미지 빌드**: Docker 이미지로 패키징
-5. **쿠버네티스 환경 구성**: 모델 서빙을 위한 인프라 준비
-6. **Seldon Core 설치 및 배포**: 모델 서빙 플랫폼 구축
-7. **백엔드 연동**: STT 결과를 번역 서비스와 연결
+#### 1. **번역이 작동하지 않을 때**
+```bash
+# API 키 확인
+docker-compose exec ai-orchestrator-api env | grep GEMINI
 
-### Seldon Core 선택 이유:
+# 로그 확인  
+docker-compose logs -f ai-orchestrator-api
+```
 
-- **확장성**: 트래픽에 따른 자동 스케일링
-- **고급 배포 전략**: A/B 테스트, 카나리 배포 지원
-- **모니터링 및 로깅**: 상세한 메트릭과 로그 제공
-- **MLOps 통합**: 표준화된 모델 서빙 방식
+#### 2. **할당량 초과 오류**
+- Gemini 1.5 Flash 모델로 변경
+- Free Tier: 1,500 요청/일, 15 요청/분
+
+#### 3. **WebSocket 연결 문제**
+```bash
+docker-compose down -v
+docker-compose up -d
+```
+
+#### 4. **높은 API 비용**
+- `gemini-1.5-flash-latest` 사용 권장
+- 불필요한 후처리 기능 비활성화
+
+## 8. 기술 스택
+
+### 🔧 **Backend:**
+- **Python 3.11+**: 주요 개발 언어
+- **FastAPI**: 고성능 비동기 API 서버 & WebSocket
+- **LangChain**: AI 워크플로우 오케스트레이션 프레임워크
+- **Google Gemini API**: 2.5 Pro/1.5 Flash AI 모델
+- **Apache Kafka**: 비동기 메시지 큐잉 시스템
+- **Redis**: 인메모리 캐싱 & 세션 관리
+- **Faster-Whisper**: 고성능 STT (Speech-to-Text) 엔진
+- **Pydub & yt-dlp**: 오디오 처리 & YouTube 추출
+
+### 🌐 **Frontend:**
+- **React 18+**: 모던 UI 컴포넌트 라이브러리
+- **JavaScript (ES6+)**: 비동기 프론트엔드 로직
+- **WebSocket API**: 실시간 양방향 통신
+- **Axios**: HTTP 클라이언트 & API 통신
+
+### 🏗️ **Infrastructure:**
+- **Docker & Docker Compose**: 컨테이너 오케스트레이션
+- **Microservices Architecture**: 확장 가능한 분산 시스템
+- **Git/GitHub**: 버전 관리 및 CI/CD
 
 ---
 
-© 2025 YouTube 일본어 STT 및 번역 시스템
+## 📁 **프로젝트 구조**
+
+```
+youtube-jp-translator/
+├── backend/
+│   ├── services/
+│   │   ├── api-gateway/          # 🚪 API 게이트웨이
+│   │   ├── youtube-extractor/    # 🎬 오디오 추출
+│   │   ├── stt-processor/        # 🎤 음성 인식
+│   │   └── ai-orchestrator/      # 🤖 AI 오케스트레이션
+│   │       ├── src/agents/       # 4개 AI 에이전트
+│   │       ├── src/chains/       # 워크플로우 체인  
+│   │       └── src/config.py     # 설정 관리
+│   ├── docker-compose.yml        # 🐳 서비스 정의
+│   └── .env                      # 🔐 환경 변수
+├── frontend/                     # 🌐 React 클라이언트
+├── CLAUDE.md                     # 📖 개발자 가이드
+├── AI_ORCHESTRATOR_README.md     # 🤖 AI 시스템 상세 가이드
+└── README.md                     # 📋 메인 문서 
+```
+
+## 🚀 **향후 계획**
+
+- [ ] **Gemini 2.5 Flash** 통합 (더 빠른 처리)
+- [ ] **GPU 가속** STT 처리
+- [ ] **다국어 지원** 확장 (중국어, 스페인어)
+- [ ] **실시간 스트리밍** 번역  
+- [ ] **REST API** 문서화 (OpenAPI)
+- [ ] **Kubernetes** 배포 지원
+
+## 🤝 **기여하기**
+
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing-feature`) 
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📞 **지원**
+
+- **Issues**: [GitHub Issues](https://github.com/soonhong99/youtube-jp-translator/issues)
+- **Documentation**: `CLAUDE.md`, `AI_ORCHESTRATOR_README.md`
+
+## 📄 **라이센스**
+
+This project is licensed under the MIT License.
+
+---
+
+**🎯 Made with ❤️ by the AI Translation Team**  
+**🔥 Powered by Google Gemini & LangChain**

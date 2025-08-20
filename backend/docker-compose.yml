@@ -69,6 +69,8 @@ services:
       echo 'Creating Kafka topics...'
       kafka-topics --create --if-not-exists --topic stt_requests --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
       kafka-topics --create --if-not-exists --topic stt_results --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic ai_processing_requests --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic ai_processing_results --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
       
       echo 'Listing topics...'
       kafka-topics --list --bootstrap-server kafka:9092
@@ -107,6 +109,7 @@ services:
     environment:
       - YOUTUBE_EXTRACTOR_URL=http://youtube-extractor:8000
       - STT_PROCESSOR_URL=http://stt-processor-api:8001
+      - AI_ORCHESTRATOR_URL=http://ai-orchestrator-api:8002
       # - TTS_SYNTHESIZER_URL=http://tts-synthesizer:8003  # TTS 서비스 준비되면 활성화
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -116,6 +119,7 @@ services:
     depends_on:
       - youtube-extractor
       - stt-processor-api
+      - ai-orchestrator-api
       - redis
     restart: unless-stopped
     networks:
@@ -167,6 +171,8 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-pro-latest}
+      - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.3}
       - REDIS_DB_WS_MESSAGES=3
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=INFO
@@ -205,6 +211,8 @@ services:
       - COMPUTE_TYPE=int8
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-pro-latest}
+      - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.3}
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=INFO
       - MAX_WORKERS=4  # 병렬 처리 워커 수
@@ -225,6 +233,72 @@ services:
         reservations:
           cpus: '1'
           memory: 2G
+
+  # ==================== AI Orchestrator Services ====================
+  
+  # AI Orchestrator API Service
+  ai-orchestrator-api:
+    build: ./services/ai-orchestrator
+    container_name: ai-orchestrator-api
+    # 포트 노출 제거 (API Gateway를 통해서만 접근)
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB_AI_CACHE=4
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-pro-latest}
+      - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.3}
+      - MAX_CONCURRENT_TASKS=5
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8002
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # AI Orchestrator Worker (Kafka Consumer)
+  ai-orchestrator-worker:
+    build: ./services/ai-orchestrator
+    container_name: ai-orchestrator-worker
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB_AI_CACHE=4
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-1.5-pro-latest}
+      - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.3}
+      - MAX_CONCURRENT_TASKS=5
+      - LOG_LEVEL=INFO
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ai-orchestrator-api:
+        condition: service_healthy
+    restart: unless-stopped
+    command: python -m src.worker
+    networks:
+      - backend-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
 
   # ==================== Future Services (Currently Disabled) ====================
   

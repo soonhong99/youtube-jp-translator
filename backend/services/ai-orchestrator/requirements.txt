@@ -1,0 +1,31 @@
+# FastAPI and ASGI
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# LangChain and AI Integration
+langchain>=0.1.20
+langchain-google-genai==1.0.8
+langchain-core>=0.2.17
+
+# Google Generative AI (Gemini) - 호환 버전으로 업데이트
+google-generativeai>=0.7.0,<0.8.0
+
+# Kafka Integration
+kafka-python==2.0.2
+
+# Redis for caching and state management
+redis==5.0.1
+
+# JSON and Data Processing
+pydantic==2.5.0
+python-json-logger==2.0.7
+
+# HTTP and async support
+httpx==0.25.2
+aiofiles==23.2.1
+
+# Environment and Configuration
+python-dotenv==1.0.0
+
+# Monitoring and Logging
+structlog==23.2.0

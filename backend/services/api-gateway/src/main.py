@@ -26,6 +26,7 @@ app.add_middleware(
 SERVICES = {
     "youtube_extractor": os.getenv("YOUTUBE_EXTRACTOR_URL", "http://youtube-extractor:8000"),
     "stt_processor": os.getenv("STT_PROCESSOR_URL", "http://stt-processor-api:8001"),
+    "ai_orchestrator": os.getenv("AI_ORCHESTRATOR_URL", "http://ai-orchestrator-api:8002"),
 }
 
 # Rate Limiting 미들웨어 (선택적 - 일단 주석 처리)
@@ -80,6 +81,108 @@ async def request_transcription(request: Request):
             return response.json()
     except httpx.HTTPError as e:
         logger.error(f"STT request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# AI Orchestrator 엔드포인트들
+@app.post("/api/ai/process")
+async def ai_process(request: Request):
+    """AI 오케스트레이터 통합 처리 API"""
+    try:
+        body = await request.json()
+        logger.info(f"Proxying AI process request to {SERVICES['ai_orchestrator']}")
+        
+        async with httpx.AsyncClient(timeout=120.0) as client:  # AI 처리는 더 긴 타임아웃
+            response = await client.post(
+                f"{SERVICES['ai_orchestrator']}/process",
+                json=body
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"AI processing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ai/translate")
+async def ai_translate(request: Request):
+    """AI 번역 API (레거시 호환성)"""
+    try:
+        body = await request.json()
+        logger.info(f"Proxying AI translate request to {SERVICES['ai_orchestrator']}")
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{SERVICES['ai_orchestrator']}/translate",
+                json=body
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"AI translation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/agents/status")
+async def ai_agents_status():
+    """AI 에이전트 상태 조회"""
+    try:
+        logger.info(f"Proxying AI agents status request to {SERVICES['ai_orchestrator']}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{SERVICES['ai_orchestrator']}/agents/status"
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"AI agents status request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/processing-modes")
+async def ai_processing_modes():
+    """AI 처리 모드 조회"""
+    try:
+        logger.info(f"Proxying AI processing modes request to {SERVICES['ai_orchestrator']}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{SERVICES['ai_orchestrator']}/processing-modes"
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"AI processing modes request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ai/process/batch")
+async def ai_process_batch(request: Request):
+    """AI 배치 처리 API"""
+    try:
+        body = await request.json()
+        logger.info(f"Proxying AI batch process request to {SERVICES['ai_orchestrator']}")
+        
+        async with httpx.AsyncClient(timeout=300.0) as client:  # 배치 처리는 매우 긴 타임아웃
+            response = await client.post(
+                f"{SERVICES['ai_orchestrator']}/process/batch",
+                json=body
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"AI batch processing failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error(f"Unexpected error: {e}")

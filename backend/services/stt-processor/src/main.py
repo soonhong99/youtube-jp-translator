@@ -16,29 +16,30 @@ from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import KafkaError
 from .kafka_config import KAFKA_BOOTSTRAP_SERVERS, STT_REQUEST_TOPIC, STT_RESULT_TOPIC
 
+# AI Orchestrator 토픽
+AI_PROCESSING_REQUEST_TOPIC = "ai_processing_requests"
+AI_PROCESSING_RESULT_TOPIC = "ai_processing_results"
+
 # WebSocket Manager 및 Redis Client (메시지 히스토리용)
 from .ws_manager import manager
 from .redis_client import get_redis_client, get_message_ttl # Redis는 히스토리용으로 유지
 
+# Gemini 모델 설정
+from .gemini_config import get_gemini_config
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 환경 변수에서 Gemini API 키 로드
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        logger.info("Gemini API Key configured successfully.")
-        # 번역에 사용할 모델 인스턴스 (애플리케이션 로드 시 한 번만 생성 권장)
-        # 사용 가능한 모델: gemini-1.5-flash-latest, gemini-1.5-pro-latest, gemini-pro 등
-        gemini_translation_model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        logger.info("Gemini model 'gemini-1.5-flash-latest' initialized for translation.")
-    except Exception as e:
-        logger.error(f"Failed to configure Gemini API or initialize model: {e}", exc_info=True)
-        gemini_translation_model = None # 초기화 실패 시 None으로 설정
-else:
-    logger.warning("GEMINI_API_KEY environment variable not found. Translation via Gemini will be disabled.")
-    gemini_translation_model = None
+# Gemini 모델 초기화
+gemini_config = get_gemini_config()
+gemini_translation_model = gemini_config.model_instance
+
+# 모델 정보 로깅
+model_info = gemini_config.get_model_info()
+logger.info(f"Gemini configuration: {model_info}")
+
+if not gemini_config.is_available():
+    logger.warning("Gemini translation model is not available. Translation will be disabled.")
 
 # async def translate_japanese_to_korean_with_gemini(japanese_text: str) -> Union[str, None]:
 #     """주어진 일본어 텍스트를 Gemini API를 사용하여 한국어로 번역합니다."""
@@ -169,7 +170,7 @@ async def translate_batched_japanese_to_korean_with_gemini(
     logger.debug(f"Combined Japanese text for Gemini:\n{combined_japanese_text}")
 
     try:
-        generation_config = genai.types.GenerationConfig(temperature=0.7)
+        generation_config = gemini_config.get_generation_config(temperature=0.7)
         response = await gemini_translation_model.generate_content_async(
             prompt,
             generation_config=generation_config,
@@ -302,7 +303,19 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                                                     logger.error(f"[Thread][Task {task_id}] Translation failed for JP: '{segment.get('text')}': {ko_text_result}")
                                                 else:
                                                     segment["korean_text"] = str(ko_text_result) if ko_text_result else "[번역 결과 없음]"
-                                                logger.info(f"[Thread][Task {task_id}] JP: '{segment.get('text')}'  ==>  KO: '{segment['korean_text']}'")
+                                                
+                                                # 번역 품질 로깅 강화
+                                                jp_text = segment.get('text', '')
+                                                ko_text = segment.get('korean_text', '')
+                                                logger.info(f"[Thread][Task {task_id}][{gemini_config.model_name}] Translation: JP='{jp_text}' -> KO='{ko_text}'")
+                                                
+                                                # 번역 길이 비교 (품질 지표)
+                                                jp_len = len(jp_text)
+                                                ko_len = len(ko_text)
+                                                length_ratio = ko_len / jp_len if jp_len > 0 else 0
+                                                if length_ratio > 3 or length_ratio < 0.3:
+                                                    logger.warning(f"[Thread][Task {task_id}] Unusual translation length ratio: {length_ratio:.2f} (JP:{jp_len} -> KO:{ko_len})")
+                                                
                                                 translation_idx += 1
                                             else: # 번역 결과 리스트가 예상보다 짧은 경우
                                                 segment["korean_text"] = "[번역 누락]"
@@ -431,8 +444,12 @@ async def health_check():
         health_status["status"] = "degraded"
     
     # 모델 로드 상태 확인
-    if gemini_translation_model:
-        health_status["gemini_model"] = "loaded"
+    if gemini_config.is_available():
+        health_status["gemini_model"] = {
+            "status": "loaded",
+            "model_name": gemini_config.model_name,
+            "temperature": gemini_config.temperature
+        }
     else:
         health_status["gemini_model"] = "not_loaded"
         # Gemini는 선택적이므로 degraded로만 표시
