@@ -46,6 +46,16 @@ docker-compose down -v  # Clear volumes to prevent WebSocket conflicts
 docker-compose build    # Build images on first run or code changes
 docker-compose up -d    # Start all services
 
+# IMPORTANT: Code Change Deployment Flow
+# When modifying backend service code, you MUST rebuild and restart:
+docker-compose build [service-name]  # Build specific service after code changes
+docker-compose up -d [service-name]  # Restart the service
+# OR for complete rebuild:
+docker-compose down && docker-compose build && docker-compose up -d
+
+# Simple restart does NOT reflect code changes:
+# docker-compose restart [service-name]  ❌ This only restarts, doesn't rebuild
+
 # View logs
 docker-compose logs -f [service-name]
 

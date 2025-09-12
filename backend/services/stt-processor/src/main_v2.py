@@ -30,6 +30,15 @@ from .redis_client import get_redis_client, get_message_ttl
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# System metrics logger (safe import)
+try:
+    from common.utils.system_logger import (
+        log_kafka_message,
+    )
+except Exception:
+    def log_kafka_message(*args, **kwargs):
+        return False
+
 # --- Kafka Producer 초기화 ---
 producer = None
 MAX_RETRIES = 5
@@ -104,6 +113,11 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
 
                 current_status = result_data.get("status", "UNKNOWN")
                 logger.info(f"[Thread][Task {task_id}] Message received. Status: {current_status}, Progress: {result_data.get('progress')}")
+                # system metrics: kafka message receipt
+                try:
+                    log_kafka_message(task_id, topic=message.topic, message=current_status)
+                except Exception:
+                    pass
 
                 # --- 상태에 따른 처리 로직 ---
                 if current_status == "STT_COMPLETED_ALL_SEGMENTS":
@@ -153,6 +167,24 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                         result_data["status"] = "FAILED"
                         result_data["error"] = "Invalid STT segment data format"
 
+                elif current_status == "AI_PROCESSING":
+                    # AI Orchestrator 중간 처리 상태 - ai_agents 정보 포함하여 전달
+                    logger.info(f"[Thread][Task {task_id}] AI processing in progress")
+                    
+                    # ai_agents 정보 추출 및 전달
+                    ai_agents_info = result_data.get("ai_agents")
+                    if ai_agents_info:
+                        result_data["ai_agents"] = ai_agents_info
+                        logger.info(f"[Thread][Task {task_id}] AI agents info: {len(ai_agents_info.get('agents', {}))} agents active")
+                    
+                    # progress_detail 전달
+                    progress_detail = result_data.get("progress_detail")
+                    if progress_detail:
+                        result_data["progress_detail"] = progress_detail
+                        logger.info(f"[Thread][Task {task_id}] Progress detail: {progress_detail}")
+                    
+                    # 그대로 프론트엔드로 전달
+
                 elif current_status == "AI_PROCESSING_COMPLETED":
                     # AI Orchestrator 처리 완료
                     logger.info(f"[Thread][Task {task_id}] AI processing completed")
@@ -163,8 +195,16 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                         result_data["progress"] = 100
                         result_data["data"] = ai_result["segments"]
                         
+                        # processing_info 완전 전달
                         processing_info = ai_result.get("processing_info", {})
-                        logger.info(f"[Thread][Task {task_id}] Final: {len(result_data['data'])} segments by {processing_info.get('model_name')} in {processing_info.get('processing_time', 0):.2f}s")
+                        if processing_info:
+                            result_data["processing_info"] = processing_info
+                            logger.info(f"[Thread][Task {task_id}] Final: {len(result_data['data'])} segments by {processing_info.get('processing_mode')} mode in {processing_info.get('processing_time', 0):.2f}s")
+                            
+                            # API 사용량 정보도 포함
+                            api_usage = processing_info.get("api_usage", {})
+                            if api_usage:
+                                logger.info(f"[Thread][Task {task_id}] API usage: {api_usage.get('total_calls', 0)} calls, {api_usage.get('total_cost_krw', 0):.1f} KRW")
                     else:
                         result_data["status"] = "FAILED"
                         result_data["error"] = "AI processing completed but no valid result"
@@ -174,6 +214,11 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                     logger.error(f"[Thread][Task {task_id}] AI processing failed: {result_data.get('error')}")
                     result_data["status"] = "FAILED"
 
+                elif current_status == "AI_PROCESSING_STARTED":
+                    # AI 처리 시작
+                    logger.info(f"[Thread][Task {task_id}] AI processing started")
+                    result_data["status"] = "AI_PROCESSING"  # 프론트엔드 호환성을 위해
+                    
                 elif current_status in ["PROCESSING", "FAILED"]:
                     # 중간 처리 상태나 실패 상태는 그대로 전달
                     logger.info(f"[Thread][Task {task_id}] Forwarding status: {current_status}")
@@ -183,10 +228,7 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                     asyncio.run_coroutine_threadsafe(
                         _send_ws_update_async(
                             task_id,
-                            result_data.get("status"),
-                            result_data.get("progress"),
-                            result_data.get("data"),
-                            result_data.get("error")
+                            result_data
                         ),
                         main_loop
                     )
@@ -211,17 +253,15 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
             consumer.close()
 
 # --- WebSocket 메시지 전송 함수 ---
-async def _send_ws_update_async(task_id: str, status: str, progress: int = None, data: Any = None, error: str = None):
-    """WebSocket 메시지 전송"""
-    message = {"status": status}
-    if progress is not None: message["progress"] = max(0, min(100, progress))
-    if data is not None: message["data"] = data
-    if error is not None: message["error"] = error
-    
+async def _send_ws_update_async(task_id: str, payload: Dict[str, Any]):
+    """WebSocket 메시지 전송 (Kafka 원본 페이로드 그대로)"""
     try:
+        if not isinstance(payload, dict):
+            logger.warning(f"[Task {task_id}] Invalid payload for WS send: {type(payload)}")
+            payload = {"status": "UNKNOWN", "error": "Invalid payload for WS send"}
         if manager:
-            await manager.send_json_message(task_id, message)
-            logger.info(f"[Task {task_id}] WebSocket message sent: {status}")
+            await manager.send_json_message(task_id, payload)
+            logger.info(f"[Task {task_id}] WebSocket message sent: {payload.get('status')}")
     except Exception as e:
         logger.error(f"[Task {task_id}] WebSocket send failed: {e}")
 

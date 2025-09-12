@@ -10,3 +10,10 @@ redis         # Python Redis 클라이언트
 pydub         # 오디오 분할/처리용
 google-generativeai
 # websockets 라이브러리는 uvicorn[standard]에 포함될 수 있음
+
+# NLP 라이브러리 (의미 단전에도 위 문장 분절용) - 가벼운 버전 우선
+bunkai  # 일본어 특화 문장 분절 라이브러리 (가벼움)
+# spacy 설치 (무거운 라이브러리이므로 선택적)
+# spacy>=3.7.0
+# https://github.com/explosion/spacy-models/releases/download/ja_core_news_sm-3.7.0/ja_core_news_sm-3.7.0-py3-none-any.whl
+# sudachipy  # 일본어 형태소 분석 (필요시만)

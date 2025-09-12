@@ -42,6 +42,7 @@ class PostProcessingChain:
             
             # 포맷팅 작업
             if self.enable_formatting and self.formatter and self.formatter.is_available():
+                parallel_tasks["korean_resegmentation"] = RunnableLambda(self._korean_sentence_segmentation)
                 parallel_tasks["speaker_analysis"] = RunnableLambda(self._analyze_speakers)
                 parallel_tasks["subtitle_formatting"] = RunnableLambda(self._format_subtitles)
                 parallel_tasks["readability_enhancement"] = RunnableLambda(self._enhance_readability)
@@ -219,6 +220,113 @@ class PostProcessingChain:
                 "error": str(e)
             }
     
+    async def _korean_sentence_segmentation(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """번역된 한국어 텍스트 재분할"""
+        segments = input_data["segments"]
+        options = input_data.get("options", {})
+        
+        try:
+            refined_segments = []
+            segmentation_applied_count = 0
+            
+            for segment in segments:
+                korean_text = segment.get('korean_text', '').strip()
+                
+                # 번역 실패한 세그먼트는 그대로 유지
+                if not korean_text or korean_text.startswith('['):
+                    refined_segments.append(segment)
+                    continue
+                
+                # 한국어 문장 분할 적용
+                sub_sentences = self._split_korean_sentence(korean_text)
+                
+                if len(sub_sentences) > 1:
+                    # 여러 문장으로 분할된 경우 시간 분배
+                    duration = segment.get('end', 0) - segment.get('start', 0)
+                    time_per_sentence = duration / len(sub_sentences)
+                    
+                    for i, sub_text in enumerate(sub_sentences):
+                        sub_segment = segment.copy()
+                        sub_segment['korean_text'] = sub_text.strip()
+                        sub_segment['original_korean_text'] = korean_text  # 원본 보존
+                        sub_segment['start'] = segment['start'] + (i * time_per_sentence)
+                        sub_segment['end'] = segment['start'] + ((i + 1) * time_per_sentence)
+                        sub_segment['segmentation_applied'] = True
+                        refined_segments.append(sub_segment)
+                    
+                    segmentation_applied_count += 1
+                else:
+                    # 분할되지 않은 경우 원본 그대로
+                    segment_copy = segment.copy()
+                    segment_copy['segmentation_applied'] = False
+                    refined_segments.append(segment_copy)
+            
+            logger.info(f"Korean resegmentation: {segmentation_applied_count} segments split into {len(refined_segments)} total")
+            
+            return {
+                "refined_segments": refined_segments,
+                "segmentation_applied": True,
+                "original_segment_count": len(segments),
+                "final_segment_count": len(refined_segments),
+                "split_applied_count": segmentation_applied_count
+            }
+            
+        except Exception as e:
+            logger.error(f"Korean sentence segmentation error: {e}")
+            return {
+                "refined_segments": segments,
+                "segmentation_applied": False,
+                "error": str(e)
+            }
+    
+    def _split_korean_sentence(self, text: str) -> List[str]:
+        """한국어 문장 분할 (간단한 규칙 기반)"""
+        if not text or len(text) < 20:
+            return [text]
+        
+        import re
+        
+        # 한국어 문장 종료 패턴들
+        split_patterns = [
+            r'([다요])\s*[.!?]?\s*([가-힣])',     # 다/요 + 다음문장
+            r'(니다)\s*[.!?]?\s*([가-힣])',       # 니다 + 다음문장  
+            r'(습니다)\s*[.!?]?\s*([가-힣])',     # 습니다 + 다음문장
+            r'(네요)\s*[.!?]?\s*([가-힣])',       # 네요 + 다음문장
+            r'(죠)\s*[.!?]?\s*([가-힣])',         # 죠 + 다음문장
+            r'([.!?])\s*([가-힣])',               # 문장부호 + 한글
+        ]
+        
+        for pattern in split_patterns:
+            if re.search(pattern, text):
+                # 분할 지점 찾기
+                parts = re.split(pattern, text)
+                if len(parts) > 3:  # 성공적으로 분할됨
+                    sentences = []
+                    current_sentence = ""
+                    
+                    for i, part in enumerate(parts):
+                        if part.strip():
+                            if i % 3 == 0:  # 첫 번째 부분
+                                current_sentence += part
+                            elif i % 3 == 1:  # 종료 패턴
+                                current_sentence += part
+                                if current_sentence.strip():
+                                    sentences.append(current_sentence.strip())
+                                current_sentence = ""
+                            else:  # 다음 문장 시작
+                                current_sentence = part
+                    
+                    if current_sentence.strip():
+                        sentences.append(current_sentence.strip())
+                    
+                    # 유효한 분할인지 확인 (너무 짧은 문장 방지)
+                    valid_sentences = [s for s in sentences if len(s) > 5]
+                    if len(valid_sentences) > 1:
+                        return valid_sentences
+        
+        # 분할 실패 시 원문 반환
+        return [text]
+    
     async def _integrate_results(self, parallel_results: Dict[str, Any]) -> Dict[str, Any]:
         """병렬 처리 결과 통합"""
         if isinstance(parallel_results, dict) and "segments" in parallel_results:
@@ -237,31 +345,42 @@ class PostProcessingChain:
         try:
             # 원본 세그먼트 가져오기
             input_data = parallel_results.get("segments") or parallel_results
-            if isinstance(input_data, dict):
+            segments = None
+            options = {}
+            
+            if isinstance(input_data, dict) and "segments" in input_data:
                 segments = input_data["segments"]
                 options = input_data.get("options", {})
             else:
                 # 병렬 결과에서 세그먼트 추출
-                segments = None
                 for key, value in parallel_results.items():
-                    if isinstance(value, dict) and "segments" in value:
-                        segments = value["segments"]
-                        break
-                    elif isinstance(value, dict) and "formatted_segments" in value:
-                        segments = value["formatted_segments"]
-                        break
-                    elif isinstance(value, dict) and "enhanced_segments" in value:
-                        segments = value["enhanced_segments"]
-                        break
+                    if isinstance(value, dict):
+                        if "segments" in value:
+                            segments = value["segments"]
+                            break
+                        elif "formatted_segments" in value:
+                            segments = value["formatted_segments"]
+                            break
+                        elif "enhanced_segments" in value:
+                            segments = value["enhanced_segments"]
+                            break
                 
+                # 추가 로깅으로 디버깅
                 if segments is None:
+                    logger.error(f"No segments found. parallel_results keys: {list(parallel_results.keys())}")
+                    logger.error(f"parallel_results content: {parallel_results}")
                     raise ValueError("No segments found in parallel results")
                 
                 options = {}
             
-            # 최종 세그먼트 결정 (우선순위: enhanced > formatted > original)
+            # 최종 세그먼트 결정 (우선순위: korean_resegmentation > enhanced > formatted > original)
             final_segments = segments
-            if "readability_enhancement" in parallel_results:
+            if "korean_resegmentation" in parallel_results:
+                resegmentation_result = parallel_results["korean_resegmentation"]
+                if resegmentation_result.get("segmentation_applied", False):
+                    final_segments = resegmentation_result["refined_segments"]
+                    logger.info(f"Using Korean resegmented segments: {len(final_segments)} segments")
+            elif "readability_enhancement" in parallel_results:
                 enhancement_result = parallel_results["readability_enhancement"]
                 if enhancement_result.get("readability_enhanced", False):
                     final_segments = enhancement_result["enhanced_segments"]

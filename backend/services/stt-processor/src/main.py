@@ -17,7 +17,7 @@ from kafka.errors import KafkaError
 from .kafka_config import KAFKA_BOOTSTRAP_SERVERS, STT_REQUEST_TOPIC, STT_RESULT_TOPIC
 
 # AI Orchestrator 토픽
-AI_PROCESSING_REQUEST_TOPIC = "ai_processing_requests"
+AI_PROCESSING_REQUEST_TOPIC = "ai_processing_requests" 
 AI_PROCESSING_RESULT_TOPIC = "ai_processing_results"
 
 # WebSocket Manager 및 Redis Client (메시지 히스토리용)
@@ -29,6 +29,11 @@ from .gemini_config import get_gemini_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# System metrics logger (local adapter)
+from .system_logger_adapter import (
+    log_kafka_message,
+)
 
 # Gemini 모델 초기화
 gemini_config = get_gemini_config()
@@ -209,7 +214,9 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 # --- API 모델 정의 ---
 class TranscriptionRequest(BaseModel):
     wav_file_path: str = Field(..., description="Path to the WAV file inside the container.")
+    task_id: str = Field(..., description="Task ID from client for WebSocket connection.")
     language: str = Field("ja", description="Language code (e.g., 'ja').")
+    ai_mode: str = Field("standard", description="AI processing mode.")
 
 class TranscriptionResponse(BaseModel):
     task_id: str = Field(..., description="Unique ID for the transcription task.")
@@ -252,6 +259,12 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                 current_status = result_data.get("status", "UNKNOWN")
                 logger.info(f"[Thread][Task {task_id}] Kafka message received. Status: {current_status}, Progress: {result_data.get('progress')}")
                 logger.debug(f"[Thread][Task {task_id}] Raw message data payload: {result_data.get('data')}")
+
+                # system metrics: kafka message receipt
+                try:
+                    log_kafka_message(task_id, topic=message.topic, message=current_status)
+                except Exception:
+                    pass
 
                 # --- 핵심 로직: 상태에 따라 분기 처리 ---
                 if current_status == "STT_COMPLETED_ALL_SEGMENTS" or current_status == "COMPLETED":
@@ -360,6 +373,31 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                     logger.info(f"[Thread][Task {task_id}] Forwarding 'PROCESSING' message as is (no translation).")
                     # result_data는 이미 수신한 그대로 사용
                 
+                elif current_status == "AI_PROCESSING_COMPLETED":
+                    # AI 처리 완료 - 번역된 세그먼트 데이터 전달
+                    logger.info(f"[Thread][Task {task_id}] AI processing completed. Forwarding translated segments.")
+                    
+                    # AI Orchestrator가 보낸 데이터 추출
+                    ai_result_data = result_data.get("data", {})
+                    if isinstance(ai_result_data, dict) and "segments" in ai_result_data:
+                        translated_segments = ai_result_data["segments"]
+                        logger.info(f"[Thread][Task {task_id}] Received {len(translated_segments)} translated segments from AI Orchestrator")
+                        
+                        # 최종 완료 상태로 변경
+                        result_data["status"] = "COMPLETED"
+                        result_data["progress"] = 100
+                        result_data["data"] = translated_segments
+                    else:
+                        logger.warning(f"[Thread][Task {task_id}] AI processing completed but no segments data found")
+                        result_data["status"] = "COMPLETED"
+                        result_data["progress"] = 100
+                        result_data["data"] = []
+
+                elif current_status == "AI_PROCESSING" or current_status == "AI_PROCESSING_FAILED":
+                    # AI 처리 중간 상태 또는 실패 상태 전달
+                    logger.info(f"[Thread][Task {task_id}] Forwarding AI processing status: {current_status}")
+                    # result_data는 이미 수신한 그대로 사용
+
                 elif current_status == "FAILED" or "CHUNK_FAILED" in current_status:
                     # 워커에서 발생한 실패 상태 그대로 전달
                     logger.warning(f"[Thread][Task {task_id}] Forwarding 'FAILED' or 'CHUNK_FAILED' message as is.")
@@ -376,10 +414,7 @@ def _run_kafka_consumer_loop(consumer: KafkaConsumer, main_loop: asyncio.Abstrac
                     asyncio.run_coroutine_threadsafe(
                         _send_ws_update_async(
                             task_id,
-                            result_data.get("status"), # 최종 결정된 status
-                            result_data.get("progress"), # 최종 결정된 progress
-                            result_data.get("data"),     # 최종 데이터 (번역 포함 또는 JP만)
-                            result_data.get("error")
+                            result_data
                         ),
                         main_loop
                     )
@@ -475,7 +510,8 @@ async def startup_event():
             try:
                 logger.info(f"Attempting to initialize Kafka Consumer (Attempt {attempt + 1}/{MAX_RETRIES})...")
                 consumer = KafkaConsumer(
-                    STT_RESULT_TOPIC, # 구독할 토픽
+                    STT_RESULT_TOPIC, # STT 결과 토픽
+                    AI_PROCESSING_RESULT_TOPIC, # AI Orchestrator 결과 토픽
                     bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                     value_deserializer=lambda v: json.loads(v.decode('utf-8')),
                     group_id='stt_result_consumers_api', # 컨슈머 그룹 ID
@@ -488,7 +524,7 @@ async def startup_event():
                 )
                 # 간단한 연결 테스트 (토픽 목록 가져오기)
                 consumer.topics() # 브로커와 통신이 되어야 성공
-                logger.info(f"Kafka Consumer initialized successfully for topic: {STT_RESULT_TOPIC}")
+                logger.info(f"Kafka Consumer initialized successfully for topics: {STT_RESULT_TOPIC}, {AI_PROCESSING_RESULT_TOPIC}")
                 break # 성공 시 루프 탈출
             except KafkaError as e:
                 logger.warning(f"Kafka Consumer initialization error (Attempt {attempt + 1}): {e}. Retrying in {RETRY_DELAY} seconds...")
@@ -548,23 +584,22 @@ async def shutdown_event():
         logger.info("Closing Kafka Producer.")
         producer.close(timeout=5) # 타임아웃 지정 가능
 
-# --- WebSocket 메시지 전송 함수 (async def 로 정의) ---
+# --- WebSocket 메시지 전송 함수 (전체 페이로드 전송) ---
 # (이 함수는 메인 이벤트 루프에서 실행될 것이므로 async def 유지)
-async def _send_ws_update_async(task_id: str, status: str, progress: int = None, data: Any = None, error: str = None):
-    """비동기적으로 WebSocket 메시지를 전송하는 내부 함수"""
-    message = {"status": status}
-    if progress is not None: message["progress"] = max(0, min(100, progress))
-    if data is not None: message["data"] = data
-    if error is not None: message["error"] = error
+async def _send_ws_update_async(task_id: str, payload: Dict[str, Any]):
+    """비동기적으로 WebSocket 메시지를 전송 (Kafka 원본 페이로드 그대로)"""
     try:
-        logger.info(f"[Task {task_id}] Attempting to send WebSocket message: status={status}, data_length={len(data) if data and isinstance(data, list) else 'N/A'}")
+        if not isinstance(payload, dict):
+            logger.warning(f"[Task {task_id}] Invalid payload type for WS send: {type(payload)}. Wrapping as error message.")
+            payload = {"status": "UNKNOWN", "error": "Invalid payload for WS send"}
+
         if manager:
-            await manager.send_json_message(task_id, message)
-            logger.info(f"[Task {task_id}] Successfully sent WebSocket message with status: {status}")
+            await manager.send_json_message(task_id, payload)
+            logger.info(f"[Task {task_id}] Successfully sent WebSocket message with status: {payload.get('status')}")
         else:
             logger.warning(f"[Task {task_id}] WebSocket manager not available, skipping live send.")
     except Exception as e:
-        logger.error(f"[Task {task_id}] Failed to send WebSocket update ({status}): {e}")
+        logger.error(f"[Task {task_id}] Failed to send WebSocket update: {e}")
 
 # --- API 엔드포인트 수정 ---
 @app.post("/request_transcription", response_model=TranscriptionResponse, status_code=202, summary="Request Transcription via Kafka")
@@ -574,11 +609,13 @@ async def request_transcription(request: TranscriptionRequest):
     if not os.path.exists(request.wav_file_path):
         raise HTTPException(status_code=404, detail=f"WAV file not found at: {request.wav_file_path}")
 
-    task_id = str(uuid.uuid4()) # Kafka 메시지 구분을 위한 고유 ID (이전 task_id 역할)
+    # 클라이언트에서 보낸 task_id 사용
+    task_id = request.task_id
     message = {
         "task_id": task_id,
         "wav_file_path": request.wav_file_path,
         "language": request.language,
+        "ai_mode": request.ai_mode,
         "request_time": asyncio.get_event_loop().time() # 요청 시간 (선택적)
     }
 

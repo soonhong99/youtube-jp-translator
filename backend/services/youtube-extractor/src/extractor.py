@@ -70,9 +70,10 @@ class YouTubeExtractor:
         # 임시 다운로드 파일 이름 생성
         temp_download_path = os.path.join(self.output_dir, "temp_download.%(ext)s")
         
-        # yt-dlp 옵션 설정
+        # yt-dlp 옵션 설정 (YouTube 제한사항 우회 개선)
         ydl_opts = {
-            'format': 'bestaudio/best',
+            # 더 유연한 포맷 선택 - 오디오 우선, 실패 시 낮은 화질 비디오에서 추출
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[ext=mp3]/bestaudio/best[height<=480]/best[height<=720]/worst',
             'outtmpl': temp_download_path,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -81,6 +82,28 @@ class YouTubeExtractor:
             }],
             'quiet': False,
             'no_warnings': False,
+            # 최신 User-Agent 및 헤더 설정
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
+            },
+            # 추가 우회 옵션들
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],  # DASH/HLS 형식 건너뛰기
+                    'player_client': ['android', 'web']  # 안드로이드/웹 클라이언트 사용
+                }
+            },
+            # 속도 제한 및 재시도 설정
+            'sleep_interval': 1,
+            'max_sleep_interval': 5,
+            'retries': 3,
+            'fragment_retries': 3,
+            # 지역 제한 우회 시도
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
         }
         
         try:

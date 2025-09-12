@@ -15,13 +15,17 @@ from .config import (
     AI_PROCESSING_REQUEST_TOPIC,
     AI_PROCESSING_RESULT_TOPIC,
     MAX_CONCURRENT_TASKS,
-    LOG_LEVEL
+    LOG_LEVEL,
+    CIRCUIT_BREAKER_ENABLED,
+    QUOTA_MANAGEMENT_ENABLED
 )
 from .agents.translator import TranslatorAgent
 from .agents.summarizer import SummarizerAgent
 from .agents.formatter import FormatterAgent
 from .agents.reviewer import ReviewerAgent
 from .chains.master_chain import MasterChain, ProcessingMode
+from .utils.api_tracker import get_api_tracker
+from .utils.circuit_breaker import get_circuit_breaker_manager
 
 # 로깅 설정
 logging.basicConfig(level=getattr(logging, LOG_LEVEL.upper()))
@@ -197,7 +201,7 @@ async def translate_segments(request: TranslationRequest):
 
 @app.get("/agents/status")
 async def get_agents_status():
-    """모든 에이전트 상태 조회"""
+    """모든 에이전트 상태 조회 (Circuit Breaker 상태 포함)"""
     agents_status = {}
     
     agents = {
@@ -211,10 +215,34 @@ async def get_agents_status():
         if agent:
             agents_status[agent_name] = agent.get_agent_info()
     
+    # Circuit Breaker 상태 추가
+    circuit_breaker_status = {}
+    if CIRCUIT_BREAKER_ENABLED:
+        try:
+            circuit_breaker_manager = get_circuit_breaker_manager()
+            circuit_breaker_status = circuit_breaker_manager.get_all_status()
+        except Exception as e:
+            logger.warning(f"Failed to get circuit breaker status: {e}")
+    
+    # API 추적 정보 추가
+    api_tracker_status = {}
+    if QUOTA_MANAGEMENT_ENABLED:
+        try:
+            api_tracker = get_api_tracker()
+            api_tracker_status = api_tracker.get_session_stats()
+        except Exception as e:
+            logger.warning(f"Failed to get API tracker status: {e}")
+    
     return {
         "total_agents": len(agents_status),
         "agents": agents_status,
-        "master_chain": master_chain.get_chain_info() if master_chain else None
+        "master_chain": master_chain.get_chain_info() if master_chain else None,
+        "circuit_breakers": circuit_breaker_status,
+        "api_tracker": api_tracker_status,
+        "optimization_features": {
+            "circuit_breaker_enabled": CIRCUIT_BREAKER_ENABLED,
+            "quota_management_enabled": QUOTA_MANAGEMENT_ENABLED
+        }
     }
 
 @app.get("/processing-modes")
@@ -281,6 +309,79 @@ async def process_batch(requests: List[ProcessingRequest]):
             status_code=500,
             detail=f"Batch processing failed: {str(e)}"
         )
+
+# ==================== 비용 모니터링 API ====================
+
+@app.get("/cost/summary")
+async def get_cost_summary():
+    """API 비용 요약 정보 조회"""
+    try:
+        tracker = get_api_tracker()
+        summary = await tracker.get_cost_summary()
+        return summary
+    except Exception as e:
+        logger.error(f"Failed to get cost summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cost/logs")
+async def get_cost_logs(
+    task_id: str = None,
+    hours: int = 24,
+    agent: str = None
+):
+    """API 비용 로그 조회"""
+    try:
+        tracker = get_api_tracker()
+        logs = await tracker.get_cost_logs(task_id=task_id, hours=hours, agent=agent)
+        return {
+            "logs": logs,
+            "filter": {
+                "task_id": task_id,
+                "hours": hours,
+                "agent": agent
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get cost logs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class CostAlertSettings(BaseModel):
+    """비용 알림 설정 모델"""
+    daily_limit: float = Field(default=10.0, description="일일 비용 한도 (USD)")
+    hourly_limit: float = Field(default=2.0, description="시간당 비용 한도 (USD)")
+    api_call_limit: int = Field(default=1000, description="API 호출 횟수 한도")
+    enabled: bool = Field(default=True, description="알림 활성화 여부")
+
+@app.get("/cost/alerts")
+async def get_cost_alerts():
+    """비용 알림 설정 및 현재 상태 조회"""
+    try:
+        tracker = get_api_tracker()
+        alerts_status = await tracker.get_alerts_status()
+        return alerts_status
+    except Exception as e:
+        logger.error(f"Failed to get cost alerts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/cost/alerts")
+async def set_cost_alerts(settings: CostAlertSettings):
+    """비용 알림 임계치 설정"""
+    try:
+        tracker = get_api_tracker()
+        await tracker.set_alert_thresholds(
+            daily_limit=settings.daily_limit,
+            hourly_limit=settings.hourly_limit,
+            api_call_limit=settings.api_call_limit,
+            enabled=settings.enabled
+        )
+        
+        return {
+            "message": "Cost alert settings updated successfully",
+            "settings": settings.dict()
+        }
+    except Exception as e:
+        logger.error(f"Failed to set cost alerts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # 에러 핸들러
 @app.exception_handler(Exception)

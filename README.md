@@ -519,6 +519,20 @@ docker-compose up -d
 - `gemini-1.5-flash-latest` 사용 권장
 - 불필요한 후처리 기능 비활성화
 
+### ⚙️ 1:1 번역 강제 옵션
+- 환경 변수 `TRANSLATION_FORCE_ONE_TO_ONE=true` 설정 시, 번역은 오직 1:1 경로만 사용합니다.
+- 지능형 그룹핑과 배치 Fallback을 비활성화하여 세그먼트 간 1:1 정합성을 보장합니다.
+- 배치 파싱 오류로 같은 문장이 반복되는 문제를 예방하는데 유용합니다.
+
+검증 로그 강화 사항
+- 배치 파싱 결과 개수 불일치 시 경고와 함께 원시 결과 프리뷰(최대 180자)를 로그로 남깁니다.
+
+간단 회귀 테스트 실행
+```
+python backend/services/ai-orchestrator/tests/test_force_one_to_one_sanity.py
+```
+네트워크/키 없이 내부 모킹으로 동작하며, 길이 일치/중복 금지를 점검합니다.
+
 ## 9. 기술 스택
 
 ### 🔧 **Backend:**

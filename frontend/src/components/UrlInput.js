@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-function UrlInput({ redirectOnSubmit = false, onSubmit, isLoading }) {
+function UrlInput({ redirectOnSubmit = false, onSubmit, isLoading, selectedMode = 'standard', customSettings = null }) {
   const [url, setUrl] = useState('');
   const navigate = useNavigate();
 
@@ -9,7 +9,15 @@ function UrlInput({ redirectOnSubmit = false, onSubmit, isLoading }) {
     e.preventDefault();
     if (!url || isLoading) return;
     if (onSubmit) onSubmit(url);
-    if (redirectOnSubmit) navigate('/translate', { state: { youtubeUrl: url } });
+    if (redirectOnSubmit) {
+      navigate('/translate', { 
+        state: { 
+          youtubeUrl: url,
+          aiMode: selectedMode,
+          customSettings: customSettings
+        } 
+      });
+    }
   };
 
   return (
