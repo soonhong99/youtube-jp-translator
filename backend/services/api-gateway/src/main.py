@@ -353,6 +353,63 @@ async def set_cost_alerts(request: Request):
         logger.error(f"Unexpected error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/ai/cost/agent-performance")
+async def get_agent_performance_analysis():
+    """AI Agent별 성능 및 비용 효율성 분석 프록시"""
+    try:
+        logger.info(f"Proxying agent performance request to {SERVICES['ai_orchestrator']}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{SERVICES['ai_orchestrator']}/cost/agent-performance"
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Agent performance analysis proxy failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/cost/mode-comparison")
+async def get_processing_mode_comparison():
+    """번역 모드별 비용 및 성능 비교 분석 프록시"""
+    try:
+        logger.info(f"Proxying mode comparison request to {SERVICES['ai_orchestrator']}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{SERVICES['ai_orchestrator']}/cost/mode-comparison"
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Mode comparison analysis proxy failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/cost/research-stats")
+async def get_research_statistics():
+    """논문 작성용 연구 통계 데이터 프록시"""
+    try:
+        logger.info(f"Proxying research stats request to {SERVICES['ai_orchestrator']}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{SERVICES['ai_orchestrator']}/cost/research-stats"
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Research statistics proxy failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.websocket("/api/ws/{task_id}")
 async def websocket_proxy(websocket: WebSocket, task_id: str):
     """WebSocket 프록시 - STT 서비스로 전달"""

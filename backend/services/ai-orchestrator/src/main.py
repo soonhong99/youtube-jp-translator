@@ -314,14 +314,43 @@ async def process_batch(requests: List[ProcessingRequest]):
 
 @app.get("/cost/summary")
 async def get_cost_summary():
-    """API 비용 요약 정보 조회"""
+    """API 비용 요약 정보 조회 (AI Agent별 세부 정보 포함)"""
     try:
         tracker = get_api_tracker()
         summary = await tracker.get_cost_summary()
+        
+        # Agent별 상세 통계 추가
+        agent_details = await _get_agent_cost_breakdown()
+        summary["agent_breakdown"] = agent_details
+        
         return summary
     except Exception as e:
         logger.error(f"Failed to get cost summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+async def _get_agent_cost_breakdown():
+    """Agent별 비용 분석"""
+    try:
+        tracker = get_api_tracker()
+        session_stats = tracker.get_session_stats()
+        
+        agent_breakdown = {}
+        
+        # 각 Agent별 통계 계산
+        for agent_name, agent_stats in session_stats.get("calls_by_agent", {}).items():
+            agent_breakdown[agent_name] = {
+                "calls": agent_stats["calls"],
+                "tokens": agent_stats["tokens"],
+                "cost_usd": agent_stats["cost_usd"],
+                "cost_krw": agent_stats["cost_krw"],
+                "avg_tokens_per_call": agent_stats["tokens"] / agent_stats["calls"] if agent_stats["calls"] > 0 else 0,
+                "avg_cost_per_call_krw": agent_stats["cost_krw"] / agent_stats["calls"] if agent_stats["calls"] > 0 else 0
+            }
+        
+        return agent_breakdown
+    except Exception as e:
+        logger.warning(f"Failed to get agent breakdown: {e}")
+        return {}
 
 @app.get("/cost/logs")
 async def get_cost_logs(
@@ -381,6 +410,251 @@ async def set_cost_alerts(settings: CostAlertSettings):
         }
     except Exception as e:
         logger.error(f"Failed to set cost alerts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== 새로운 세부 분석 API ====================
+
+@app.get("/cost/agent-performance")
+async def get_agent_performance_analysis():
+    """AI Agent별 성능 및 비용 효율성 분석"""
+    try:
+        tracker = get_api_tracker()
+        logs = await tracker.get_cost_logs(hours=24)
+        
+        # Agent별 성능 지표 계산
+        agent_performance = {}
+        
+        for log in logs:
+            agent_name = log.get("agent_name", "unknown")
+            
+            if agent_name not in agent_performance:
+                agent_performance[agent_name] = {
+                    "total_calls": 0,
+                    "successful_calls": 0,
+                    "failed_calls": 0,
+                    "total_tokens": 0,
+                    "total_cost_krw": 0,
+                    "total_processing_time_ms": 0,
+                    "functions": {}
+                }
+            
+            perf = agent_performance[agent_name]
+            perf["total_calls"] += 1
+            perf["total_tokens"] += log.get("total_tokens", 0)
+            perf["total_cost_krw"] += log.get("estimated_cost_krw", 0)
+            perf["total_processing_time_ms"] += log.get("processing_time_ms", 0)
+            
+            if log.get("success"):
+                perf["successful_calls"] += 1
+            else:
+                perf["failed_calls"] += 1
+            
+            # Function별 세부 분석
+            function_name = log.get("function_name", "unknown")
+            if function_name not in perf["functions"]:
+                perf["functions"][function_name] = {
+                    "calls": 0,
+                    "avg_tokens": 0,
+                    "avg_cost_krw": 0,
+                    "avg_processing_time_ms": 0
+                }
+            
+            func_stats = perf["functions"][function_name]
+            func_stats["calls"] += 1
+        
+        # 효율성 지표 계산
+        for agent_name, perf in agent_performance.items():
+            if perf["total_calls"] > 0:
+                perf["success_rate"] = perf["successful_calls"] / perf["total_calls"]
+                perf["avg_tokens_per_call"] = perf["total_tokens"] / perf["total_calls"]
+                perf["avg_cost_per_call_krw"] = perf["total_cost_krw"] / perf["total_calls"]
+                perf["avg_processing_time_per_call_ms"] = perf["total_processing_time_ms"] / perf["total_calls"]
+                perf["cost_per_token_krw"] = perf["total_cost_krw"] / perf["total_tokens"] if perf["total_tokens"] > 0 else 0
+            
+            # Function별 평균 계산
+            for func_name, func_stats in perf["functions"].items():
+                if func_stats["calls"] > 0:
+                    # 해당 function의 모든 로그를 다시 집계
+                    func_logs = [log for log in logs if log.get("agent_name") == agent_name and log.get("function_name") == func_name]
+                    
+                    if func_logs:
+                        func_stats["avg_tokens"] = sum(log.get("total_tokens", 0) for log in func_logs) / len(func_logs)
+                        func_stats["avg_cost_krw"] = sum(log.get("estimated_cost_krw", 0) for log in func_logs) / len(func_logs)
+                        func_stats["avg_processing_time_ms"] = sum(log.get("processing_time_ms", 0) for log in func_logs) / len(func_logs)
+        
+        return {
+            "agent_performance": agent_performance,
+            "analysis_period": "24h",
+            "total_agents_analyzed": len(agent_performance)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get agent performance analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cost/mode-comparison")
+async def get_processing_mode_comparison():
+    """번역 모드별 비용 및 성능 비교 분석"""
+    try:
+        tracker = get_api_tracker()
+        logs = await tracker.get_cost_logs(hours=24)
+        
+        # task_id에서 모드 정보 추출 (task_id에 모드 정보가 포함되어 있다고 가정)
+        mode_analysis = {
+            "fast": {
+                "tasks": 0,
+                "total_cost_krw": 0,
+                "total_tokens": 0,
+                "total_processing_time_ms": 0,
+                "avg_agents_used": 0,
+                "agents_breakdown": {}
+            },
+            "standard": {
+                "tasks": 0,
+                "total_cost_krw": 0,
+                "total_tokens": 0,
+                "total_processing_time_ms": 0,
+                "avg_agents_used": 0,
+                "agents_breakdown": {}
+            },
+            "premium": {
+                "tasks": 0,
+                "total_cost_krw": 0,
+                "total_tokens": 0,
+                "total_processing_time_ms": 0,
+                "avg_agents_used": 0,
+                "agents_breakdown": {}
+            }
+        }
+        
+        # 태스크별로 그룹화
+        task_groups = {}
+        for log in logs:
+            task_id = log.get("task_id", "unknown")
+            if task_id not in task_groups:
+                task_groups[task_id] = []
+            task_groups[task_id].append(log)
+        
+        # 각 태스크의 모드 추정 및 분석
+        for task_id, task_logs in task_groups.items():
+            # 사용된 Agent 수로 모드 추정
+            agents_used = set(log.get("agent_name") for log in task_logs)
+            
+            estimated_mode = "fast"  # 기본값
+            if "ReviewerAgent" in agents_used or len(agents_used) >= 4:
+                estimated_mode = "premium"
+            elif "SummarizerAgent" in agents_used or "FormatterAgent" in agents_used:
+                estimated_mode = "standard"
+            
+            mode_data = mode_analysis[estimated_mode]
+            mode_data["tasks"] += 1
+            mode_data["avg_agents_used"] += len(agents_used)
+            
+            for log in task_logs:
+                mode_data["total_cost_krw"] += log.get("estimated_cost_krw", 0)
+                mode_data["total_tokens"] += log.get("total_tokens", 0)
+                mode_data["total_processing_time_ms"] += log.get("processing_time_ms", 0)
+                
+                # Agent별 분석
+                agent_name = log.get("agent_name", "unknown")
+                if agent_name not in mode_data["agents_breakdown"]:
+                    mode_data["agents_breakdown"][agent_name] = {
+                        "calls": 0,
+                        "total_cost_krw": 0,
+                        "total_tokens": 0
+                    }
+                
+                agent_breakdown = mode_data["agents_breakdown"][agent_name]
+                agent_breakdown["calls"] += 1
+                agent_breakdown["total_cost_krw"] += log.get("estimated_cost_krw", 0)
+                agent_breakdown["total_tokens"] += log.get("total_tokens", 0)
+        
+        # 평균 계산
+        for mode, data in mode_analysis.items():
+            if data["tasks"] > 0:
+                data["avg_cost_per_task_krw"] = data["total_cost_krw"] / data["tasks"]
+                data["avg_tokens_per_task"] = data["total_tokens"] / data["tasks"]
+                data["avg_processing_time_per_task_ms"] = data["total_processing_time_ms"] / data["tasks"]
+                data["avg_agents_used"] = data["avg_agents_used"] / data["tasks"]
+        
+        return {
+            "mode_comparison": mode_analysis,
+            "analysis_period": "24h",
+            "total_tasks_analyzed": sum(data["tasks"] for data in mode_analysis.values())
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get mode comparison: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/cost/research-stats")
+async def get_research_statistics():
+    """논문 작성용 연구 통계 데이터"""
+    try:
+        tracker = get_api_tracker()
+        logs = await tracker.get_cost_logs(hours=168)  # 최근 1주일
+        
+        # 연구용 통계 계산
+        research_stats = {
+            "total_api_calls": len(logs),
+            "unique_tasks": len(set(log.get("task_id") for log in logs)),
+            "total_cost_krw": sum(log.get("estimated_cost_krw", 0) for log in logs),
+            "total_tokens": sum(log.get("total_tokens", 0) for log in logs),
+            "average_response_time_ms": sum(log.get("processing_time_ms", 0) for log in logs) / len(logs) if logs else 0,
+            "success_rate": sum(1 for log in logs if log.get("success")) / len(logs) if logs else 0,
+            
+            # 모델별 사용량
+            "model_usage": {},
+            "agent_efficiency": {},
+            "daily_usage_pattern": {},
+            
+            # 비용 효율성 지표
+            "cost_per_successful_translation": 0,
+            "tokens_per_krw": 0,
+            "agent_utilization_rate": {}
+        }
+        
+        # 모델별 통계
+        for log in logs:
+            model = log.get("model_name", "unknown")
+            if model not in research_stats["model_usage"]:
+                research_stats["model_usage"][model] = {
+                    "calls": 0,
+                    "total_cost_krw": 0,
+                    "total_tokens": 0,
+                    "avg_response_time_ms": 0
+                }
+            
+            model_stats = research_stats["model_usage"][model]
+            model_stats["calls"] += 1
+            model_stats["total_cost_krw"] += log.get("estimated_cost_krw", 0)
+            model_stats["total_tokens"] += log.get("total_tokens", 0)
+        
+        # 평균 계산
+        for model, stats in research_stats["model_usage"].items():
+            if stats["calls"] > 0:
+                model_logs = [log for log in logs if log.get("model_name") == model]
+                stats["avg_response_time_ms"] = sum(log.get("processing_time_ms", 0) for log in model_logs) / len(model_logs)
+                stats["cost_per_token_krw"] = stats["total_cost_krw"] / stats["total_tokens"] if stats["total_tokens"] > 0 else 0
+        
+        # 전체 효율성 지표
+        successful_calls = [log for log in logs if log.get("success")]
+        if successful_calls:
+            research_stats["cost_per_successful_translation"] = research_stats["total_cost_krw"] / len(successful_calls)
+        
+        if research_stats["total_cost_krw"] > 0:
+            research_stats["tokens_per_krw"] = research_stats["total_tokens"] / research_stats["total_cost_krw"]
+        
+        # Agent 활용률
+        total_agents = 4  # TranslatorAgent, SummarizerAgent, FormatterAgent, ReviewerAgent
+        unique_agents_used = len(set(log.get("agent_name") for log in logs))
+        research_stats["agent_utilization_rate"]["unique_agents_used"] = unique_agents_used
+        research_stats["agent_utilization_rate"]["utilization_percentage"] = (unique_agents_used / total_agents) * 100
+        
+        return research_stats
+        
+    except Exception as e:
+        logger.error(f"Failed to get research statistics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # 에러 핸들러
