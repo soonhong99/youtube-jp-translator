@@ -1,0 +1,65 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Prometheus 자체 모니터링
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Performance Monitor 메트릭
+  - job_name: 'performance-monitor'
+    static_configs:
+      - targets: ['performance-monitor:8000']
+    scrape_interval: 5s
+    metrics_path: '/metrics'
+
+  # Streaming Coordinator 메트릭
+  - job_name: 'streaming-coordinator'
+    static_configs:
+      - targets: ['streaming-coordinator:8004']
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+
+  # Translation Worker Pool 메트릭
+  - job_name: 'translation-worker-pool'
+    static_configs:
+      - targets: ['translation-worker-pool:8005']
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+
+  # API Gateway 메트릭
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8080']
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+
+  # STT Processor 메트릭
+  - job_name: 'stt-processor'
+    static_configs:
+      - targets: ['stt-processor-api:8001']
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+
+  # AI Orchestrator 메트릭
+  - job_name: 'ai-orchestrator'
+    static_configs:
+      - targets: ['ai-orchestrator-api:8002']
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+
+  # Redis 메트릭 (redis_exporter 사용 시)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+
+  # Kafka 메트릭 (kafka_exporter 사용 시)
+  # - job_name: 'kafka'
+  #   static_configs:
+  #     - targets: ['kafka-exporter:9308']

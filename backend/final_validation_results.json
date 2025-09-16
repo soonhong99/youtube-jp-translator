@@ -1,0 +1,86 @@
+{
+  "total_tests": 4,
+  "passed_tests": 2,
+  "failed_tests": 2,
+  "success_rate": 0.5,
+  "total_duration": 31.92487907409668,
+  "results": [
+    {
+      "test_name": "service_health",
+      "success": true,
+      "duration": 1.3250482082366943,
+      "details": {
+        "API Gateway": "healthy",
+        "STT Processor": "healthy",
+        "AI Orchestrator": "healthy",
+        "Streaming STT": "healthy",
+        "Performance Monitor": "healthy",
+        "API Optimization": "error: Server disconnected",
+        "Intelligent Buffering": "error: Server disconnected"
+      },
+      "error": null
+    },
+    {
+      "test_name": "streaming_rollout",
+      "success": true,
+      "duration": 0.2903900146484375,
+      "details": {
+        "rollout_setting": {
+          "success": true,
+          "percentage": 100,
+          "message": "스트리밍 롤아웃이 100%로 설정되었습니다"
+        },
+        "rollout_status": {
+          "streaming_percentage": 100,
+          "legacy_percentage": 0,
+          "last_updated": 1758021441.1097255,
+          "active_connections": 0,
+          "active_tasks": 0
+        }
+      },
+      "error": null
+    },
+    {
+      "test_name": "streaming_translation",
+      "success": false,
+      "duration": 30.30115795135498,
+      "details": {
+        "request_payload": {
+          "task_id": "e2e_test_1758021440",
+          "audio_file_path": "/tmp/tmp4kzh8ael.wav",
+          "mode": "streaming",
+          "chunk_duration": 0.5,
+          "overlap_duration": 0.1
+        },
+        "stream_response": {
+          "task_id": "e2e_test_1758021440",
+          "mode": "streaming",
+          "status": "processing",
+          "message": "스트리밍 모드로 처리 중입니다",
+          "estimated_first_result": 8,
+          "estimated_completion": 30
+        },
+        "total_messages": 1,
+        "stt_chunks": 0,
+        "translation_results": 0,
+        "optimized_results": 0,
+        "phase3_working": false,
+        "messages": [
+          {
+            "type": "bind_success",
+            "task_id": "e2e_test_1758021440",
+            "connection_id": "e2e_test_1758021440"
+          }
+        ]
+      },
+      "error": "No STT chunks or messages received"
+    },
+    {
+      "test_name": "phase3_metrics",
+      "success": false,
+      "duration": 0.008282899856567383,
+      "details": {},
+      "error": "Server disconnected"
+    }
+  ]
+}

@@ -91,6 +91,16 @@ async def get_video_info(youtube_url: HttpUrl):
         logger.error(f"비디오 정보 가져오기 중 오류 발생: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/health")
+async def health():
+    """컨테이너 헬스체크용 엔드포인트"""
+    try:
+        # 간단한 파일 시스템 체크(출력 디렉토리 존재 여부)
+        os.makedirs(output_dir, exist_ok=True)
+        return {"status": "healthy", "service": "youtube-extractor"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

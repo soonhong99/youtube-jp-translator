@@ -71,6 +71,19 @@ services:
       kafka-topics --create --if-not-exists --topic stt_results --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
       kafka-topics --create --if-not-exists --topic ai_processing_requests --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
       kafka-topics --create --if-not-exists --topic ai_processing_results --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+
+      # Phase 1 스트리밍 토픽들
+      kafka-topics --create --if-not-exists --topic stt_chunks --bootstrap-server kafka:9092 --partitions 5 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic translation_queue --bootstrap-server kafka:9092 --partitions 8 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic realtime_results --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic performance_metrics --bootstrap-server kafka:9092 --partitions 2 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic streaming_control --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1
+      # Kafka-centric streaming 추가 토픽들
+      kafka-topics --create --if-not-exists --topic streaming_requests --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic buffering_requests --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic intelligent_translation_requests --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic optimized_translation_results --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic system_alerts --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1
       
       echo 'Listing topics...'
       kafka-topics --list --bootstrap-server kafka:9092
@@ -107,10 +120,19 @@ services:
     ports:
       - "8080:8080"  # 외부에서 접근 가능한 유일한 포트
     environment:
-      - YOUTUBE_EXTRACTOR_URL=http://youtube-extractor:8000
+      # NOTE: The youtube-extractor container uses a custom container_name
+      # (youtube-extractor-service). Service discovery by service name
+      # (youtube-extractor) is not guaranteed when container_name is set.
+      # Point directly at the container_name to avoid DNS resolution errors.
+      - YOUTUBE_EXTRACTOR_URL=http://youtube-extractor-service:8000
       - STT_PROCESSOR_URL=http://stt-processor-api:8001
       - AI_ORCHESTRATOR_URL=http://ai-orchestrator-api:8002
       # - TTS_SYNTHESIZER_URL=http://tts-synthesizer:8003  # TTS 서비스 준비되면 활성화
+      # Phase 1 새로운 서비스들
+      - STREAMING_COORDINATOR_URL=http://streaming-coordinator:8004
+      - TRANSLATION_WORKER_POOL_URL=http://translation-worker-pool:8005
+      - PERFORMANCE_MONITOR_URL=http://performance-monitor:8006
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - LOG_LEVEL=INFO
@@ -124,8 +146,10 @@ services:
     restart: unless-stopped
     networks:
       - backend-network
+    links:
+      - redis
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health', timeout=5).raise_for_status()"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -147,7 +171,7 @@ services:
     networks:
       - backend-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health', timeout=5).raise_for_status()"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -160,7 +184,9 @@ services:
       args:
         MODEL_SIZE: base
     container_name: stt-processor-api
-    # 포트 노출 제거 (API Gateway를 통해서만 접근)
+    # 개발/테스트용 포트 노출 (운영시 제거)
+    ports:
+      - "127.0.0.1:8001:8001"
     volumes:
       - youtube_audio_data:/app/downloads
       - faster_whisper_models:/app/models
@@ -190,7 +216,7 @@ services:
     networks:
       - backend-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health', timeout=5).raise_for_status()"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8001/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -243,7 +269,9 @@ services:
   ai-orchestrator-api:
     build: ./services/ai-orchestrator
     container_name: ai-orchestrator-api
-    # 포트 노출 제거 (API Gateway를 통해서만 접근)
+    # 개발/테스트용 포트 노출 (운영시 제거)
+    ports:
+      - "127.0.0.1:8002:8002"
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - REDIS_HOST=redis
@@ -295,6 +323,11 @@ services:
     command: python -m src.worker
     networks:
       - backend-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('ok')"]
+      interval: 30s
+      timeout: 5s
+      retries: 1
     deploy:
       resources:
         limits:
@@ -363,10 +396,7 @@ services:
 # ==================== Networks ====================
 networks:
   backend-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+    external: true
 
 # ==================== Volumes ====================
 volumes:

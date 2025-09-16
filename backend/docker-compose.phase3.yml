@@ -1,0 +1,158 @@
+version: '3.8'
+
+services:
+  # ==================== Phase 3 Services ====================
+
+  # Intelligent Buffering Service - 지능형 버퍼링 시스템
+  intelligent-buffering:
+    build: ./services/intelligent-buffering
+    container_name: intelligent-buffering
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB_BUFFERING=9
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - LOG_LEVEL=INFO
+    depends_on:
+      - redis
+      - kafka
+    restart: unless-stopped
+    networks:
+      - backend-network
+    ports:
+      - "127.0.0.1:8008:8008"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # API Optimization Service - API 최적화 시스템
+  api-optimization:
+    build: ./services/api-optimization
+    container_name: api-optimization
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB_OPTIMIZATION=10
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - LOG_LEVEL=INFO
+    depends_on:
+      - redis
+      - kafka
+    restart: unless-stopped
+    networks:
+      - backend-network
+    ports:
+      - "127.0.0.1:8009:8009"
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ==================== Enhanced Monitoring ====================
+
+  # Prometheus - 메트릭 수집 (Phase 3 확장)
+  prometheus-phase3:
+    image: prom/prometheus:latest
+    container_name: prometheus-phase3
+    ports:
+      - "127.0.0.1:9091:9090"
+    volumes:
+      - ./monitoring/prometheus-phase3.yml:/etc/prometheus/prometheus.yml
+      - prometheus_phase3_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - backend-network
+    profiles:
+      - monitoring
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Grafana - Phase 3 대시보드
+  grafana-phase3:
+    image: grafana/grafana:latest
+    container_name: grafana-phase3
+    ports:
+      - "127.0.0.1:3002:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_phase3_data:/var/lib/grafana
+      - ./monitoring/grafana-phase3/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana-phase3/datasources:/etc/grafana/provisioning/datasources
+    restart: unless-stopped
+    networks:
+      - backend-network
+    profiles:
+      - monitoring
+    depends_on:
+      - prometheus-phase3
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ==================== Load Testing Tools ====================
+
+  # Load Tester - 성능 테스트
+  load-tester:
+    image: python:3.11-slim
+    container_name: load-tester
+    working_dir: /app
+    volumes:
+      - ./scripts/load-testing:/app
+    command: tail -f /dev/null  # Keep container running
+    networks:
+      - backend-network
+    profiles:
+      - testing
+    environment:
+      - API_GATEWAY_URL=http://api-gateway:8080
+      - INTELLIGENT_BUFFERING_URL=http://intelligent-buffering:8008
+      - API_OPTIMIZATION_URL=http://api-optimization:8009
+
+# ==================== Networks ====================
+networks:
+  backend-network:
+    external: true
+
+# ==================== Volumes ====================
+volumes:
+  prometheus_phase3_data:
+    driver: local
+  grafana_phase3_data:
+    driver: local

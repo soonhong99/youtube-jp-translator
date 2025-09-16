@@ -1,0 +1,79 @@
+{
+  "total_tests": 4,
+  "passed_tests": 0,
+  "failed_tests": 4,
+  "success_rate": 0.0,
+  "total_duration": 51.71738123893738,
+  "results": [
+    {
+      "test_name": "service_health",
+      "success": false,
+      "duration": 7.798155069351196,
+      "details": {
+        "API Gateway": "error: ",
+        "STT Processor": "error: Cannot connect to host localhost:8001 ssl:default [Multiple exceptions: [Errno 61] Connect call failed ('::1', 8001, 0, 0), [Errno 61] Connect call failed ('127.0.0.1', 8001)]",
+        "AI Orchestrator": "error: Cannot connect to host localhost:8002 ssl:default [Multiple exceptions: [Errno 61] Connect call failed ('::1', 8002, 0, 0), [Errno 61] Connect call failed ('127.0.0.1', 8002)]",
+        "Streaming STT": "healthy",
+        "Performance Monitor": "error: Cannot connect to host localhost:8006 ssl:default [Multiple exceptions: [Errno 61] Connect call failed ('::1', 8006, 0, 0), [Errno 61] Connect call failed ('127.0.0.1', 8006)]",
+        "API Optimization": "error: Server disconnected",
+        "Intelligent Buffering": "error: Server disconnected"
+      },
+      "error": "Only 1/7 services healthy"
+    },
+    {
+      "test_name": "streaming_rollout",
+      "success": false,
+      "duration": 6.948978900909424,
+      "details": {
+        "rollout_setting": {
+          "success": false,
+          "message": "롤아웃 비율 설정에 실패했습니다"
+        },
+        "rollout_status": {
+          "error": "Error -2 connecting to redis:6379. -2."
+        }
+      },
+      "error": null
+    },
+    {
+      "test_name": "streaming_translation",
+      "success": false,
+      "duration": 36.96525526046753,
+      "details": {
+        "request_payload": {
+          "task_id": "e2e_test_1758020811",
+          "audio_file_path": "/tmp/tmp865qtgaf.wav",
+          "mode": "streaming",
+          "chunk_duration": 0.5,
+          "overlap_duration": 0.1
+        },
+        "stream_response": {
+          "task_id": "e2e_test_1758020811",
+          "mode": "legacy",
+          "status": "processing",
+          "message": "Legacy 모드로 처리 중입니다"
+        },
+        "total_messages": 1,
+        "stt_chunks": 0,
+        "translation_results": 0,
+        "optimized_results": 0,
+        "phase3_working": false,
+        "messages": [
+          {
+            "type": "bind_success",
+            "task_id": "e2e_test_1758020811",
+            "connection_id": "e2e_test_1758020811"
+          }
+        ]
+      },
+      "error": "No STT chunks or messages received"
+    },
+    {
+      "test_name": "phase3_metrics",
+      "success": false,
+      "duration": 0.004992008209228516,
+      "details": {},
+      "error": "Server disconnected"
+    }
+  ]
+}

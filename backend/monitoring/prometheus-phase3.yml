@@ -1,0 +1,78 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Phase 3 Services
+  - job_name: 'intelligent-buffering'
+    static_configs:
+      - targets: ['intelligent-buffering:8008']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  - job_name: 'api-optimization'
+    static_configs:
+      - targets: ['api-optimization:8009']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Phase 2 Services (기존)
+  - job_name: 'streaming-coordinator'
+    static_configs:
+      - targets: ['streaming-coordinator:8004']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  - job_name: 'translation-worker-pool'
+    static_configs:
+      - targets: ['translation-worker-pool:8005']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  - job_name: 'performance-monitor'
+    static_configs:
+      - targets: ['performance-monitor:8006']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  - job_name: 'streaming-stt-processor'
+    static_configs:
+      - targets: ['streaming-stt-processor:8007']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  # Core Services
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  - job_name: 'stt-processor'
+    static_configs:
+      - targets: ['stt-processor-api:8001']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  # Infrastructure
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka:9092']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # System Metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['localhost:9100']
+    scrape_interval: 15s

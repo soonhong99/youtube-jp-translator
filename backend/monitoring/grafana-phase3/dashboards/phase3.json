@@ -1,0 +1,48 @@
+{
+  "title": "Phase 3 Overview",
+  "timezone": "browser",
+  "version": 1,
+  "schemaVersion": 38,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Buffer Triggers by Reason",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "sum by (reason) (rate(buffer_trigger_total[5m]))", "legendFormat": "{{reason}}", "refId": "A"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Optimized Results Forwarded (5m rate)",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "sum(rate(optimized_results_forwarded_total[5m]))", "refId": "A"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active Streams (Coordinator)",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "targets": [
+        {"expr": "active_streams_total", "refId": "A"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "STT Processing Throughput",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "sum(rate(stt_processing_seconds_count[5m]))", "refId": "A", "legendFormat": "chunks/s"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Translation Latency p95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(translation_latency_seconds_bucket[5m])))", "refId": "A"}
+      ]
+    }
+  ]
+}

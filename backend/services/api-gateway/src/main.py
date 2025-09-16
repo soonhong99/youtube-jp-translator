@@ -9,6 +9,8 @@ import websockets
 import asyncio
 import redis
 from datetime import datetime, timedelta
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,12 +39,66 @@ SERVICES = {
     "youtube_extractor": os.getenv("YOUTUBE_EXTRACTOR_URL", "http://youtube-extractor:8000"),
     "stt_processor": os.getenv("STT_PROCESSOR_URL", "http://stt-processor-api:8001"),
     "ai_orchestrator": os.getenv("AI_ORCHESTRATOR_URL", "http://ai-orchestrator-api:8002"),
+    "streaming_coordinator": os.getenv("STREAMING_COORDINATOR_URL", "http://streaming-coordinator:8004"),
+    "translation_worker_pool": os.getenv("TRANSLATION_WORKER_POOL_URL", "http://translation-worker-pool:8005"),
+    "performance_monitor": os.getenv("PERFORMANCE_MONITOR_URL", "http://performance-monitor:8006"),
 }
 
 # Redis 연결 설정 (시스템 모니터링용)
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=5, decode_responses=True)
+
+# 스트리밍 핸들러 초기화
+import redis.asyncio as async_redis
+from kafka import KafkaProducer
+import json
+
+async_redis_client = None
+streaming_handler = None
+kafka_producer = None
+phase3 = None
+
+async def initialize_streaming_handler():
+    """스트리밍 핸들러 초기화"""
+    global async_redis_client, streaming_handler, kafka_producer, phase3
+    try:
+        # Redis 클라이언트 초기화
+        async_redis_client = async_redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=5,
+            decode_responses=True
+        )
+
+        # Kafka 프로듀서 초기화
+        kafka_producer = KafkaProducer(
+            bootstrap_servers=['kafka:9092'],
+            value_serializer=lambda x: json.dumps(x, ensure_ascii=False).encode('utf-8'),
+            key_serializer=lambda x: x.encode('utf-8') if x else None
+        )
+
+        # Phase 3 통합 초기화 (먼저 생성하여 핸들러에 주입)
+        try:
+            from src.phase3_integration import Phase3Integration
+            phase3_local = Phase3Integration(async_redis_client, kafka_producer)
+            logger.info("✅ Phase 3 integration initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ Phase 3 integration initialization skipped: {e}")
+            phase3_local = None
+
+        # 스트리밍 핸들러 초기화
+        from src.streaming_handler import StreamingHandler
+        streaming_handler_local = StreamingHandler(async_redis_client, kafka_producer, phase3_integration=phase3_local)
+        await streaming_handler_local.start()
+
+        # 전역 바인딩
+        globals()['streaming_handler'] = streaming_handler_local
+        globals()['phase3'] = phase3_local
+
+        logger.info("✅ Streaming handler initialized")
+    except Exception as e:
+        logger.error(f"❌ Streaming handler initialization failed: {e}")
 
 # Rate Limiting 미들웨어 (선택적 - 일단 주석 처리)
 # from src.middleware import RateLimitMiddleware
@@ -51,6 +107,12 @@ redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=5, decode_respon
 # 인증 미들웨어 제거 (나중에 필요시 추가)
 # from src.auth import verify_token
 
+@app.on_event("startup")
+async def startup_event():
+    """서비스 시작 시 초기화 비동기 태스크로 수행하여 HTTP 서비스 즉시 시작"""
+    # 초기화가 비교적 시간이 걸릴 수 있으므로 await 하지 않고 백그라운드 태스크로 실행
+    asyncio.create_task(initialize_streaming_handler())
+
 @app.get("/")
 async def root():
     return {"message": "API Gateway is running"}
@@ -58,6 +120,11 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "api-gateway"}
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/api/youtube/extract")
 async def extract_audio(request: Request):  # verify_token 의존성 제거
@@ -258,6 +325,168 @@ async def ai_process_batch(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== 스트리밍 번역 API ====================
+
+@app.post("/api/streaming/translate")
+async def streaming_translate(request: Request):
+    """스트리밍 번역 요청"""
+    try:
+        if not streaming_handler:
+            raise HTTPException(status_code=503, detail="Streaming handler not initialized")
+
+        body = await request.json()
+
+        from src.streaming_handler import StreamingTranslationRequest
+        streaming_request = StreamingTranslationRequest(**body)
+
+        result = await streaming_handler.handle_translation_request(streaming_request)
+        return result
+
+    except Exception as e:
+        logger.error(f"Streaming translation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Phase 3 Control Endpoints ====================
+
+@app.post("/api/phase3/config")
+async def update_phase3_config(request: Request):
+    if not phase3:
+        raise HTTPException(status_code=503, detail="Phase 3 not initialized")
+    try:
+        body = await request.json()
+        success = await phase3.update_phase3_config(body)
+        if success:
+            return {"success": True, "updated": body}
+        return {"success": False, "message": "Failed to update Phase 3 config"}
+    except Exception as e:
+        logger.error(f"Phase 3 config update failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/phase3/metrics")
+async def get_phase3_metrics():
+    if not phase3:
+        raise HTTPException(status_code=503, detail="Phase 3 not initialized")
+    try:
+        return await phase3.get_phase3_metrics()
+    except Exception as e:
+        logger.error(f"Phase 3 metrics fetch failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/streaming/status/{task_id}")
+async def get_streaming_status(task_id: str):
+    """스트리밍 작업 상태 조회"""
+    try:
+        if not streaming_handler:
+            raise HTTPException(status_code=503, detail="Streaming handler not initialized")
+
+        return await streaming_handler.get_streaming_status(task_id)
+
+    except Exception as e:
+        logger.error(f"Streaming status check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/streaming/terminate/{task_id}")
+async def terminate_streaming(task_id: str):
+    """스트리밍 작업 종료"""
+    try:
+        if not streaming_handler:
+            raise HTTPException(status_code=503, detail="Streaming handler not initialized")
+
+        return await streaming_handler.terminate_streaming(task_id)
+
+    except Exception as e:
+        logger.error(f"Streaming termination failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/streaming/metrics")
+async def get_streaming_metrics():
+    """스트리밍 성능 메트릭 조회"""
+    try:
+        if not streaming_handler:
+            raise HTTPException(status_code=503, detail="Streaming handler not initialized")
+
+        return await streaming_handler.get_performance_metrics()
+
+    except Exception as e:
+        logger.error(f"Streaming metrics collection failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/streaming/rollout")
+async def update_streaming_rollout(request: Request):
+    """스트리밍 롤아웃 비율 업데이트 (관리자용)"""
+    try:
+        if not streaming_handler:
+            raise HTTPException(status_code=503, detail="Streaming handler not initialized")
+
+        body = await request.json()
+        percentage = body.get("percentage")
+
+        if percentage is None or not isinstance(percentage, int) or not 0 <= percentage <= 100:
+            raise HTTPException(status_code=400, detail="Invalid percentage value")
+
+        return await streaming_handler.update_rollout_percentage(percentage)
+
+    except Exception as e:
+        logger.error(f"Streaming rollout update failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/streaming/rollout")
+async def get_streaming_rollout():
+    """현재 스트리밍 롤아웃 상태 조회"""
+    try:
+        if not streaming_handler:
+            raise HTTPException(status_code=503, detail="Streaming handler not initialized")
+
+        return await streaming_handler.get_rollout_status()
+
+    except Exception as e:
+        logger.error(f"Streaming rollout status check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== 새로운 서비스 프록시 엔드포인트 ====================
+
+@app.get("/api/translation-pool/status")
+async def translation_pool_status():
+    """번역 워커 풀 상태 조회"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{SERVICES['translation_worker_pool']}/workers/status"
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Translation pool status request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/performance-monitor/summary")
+async def performance_monitor_summary():
+    """성능 모니터 요약 조회"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{SERVICES['performance_monitor']}/performance/summary"
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Performance monitor summary request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/streaming-coordinator/streams")
+async def streaming_coordinator_streams():
+    """활성 스트림 목록 조회"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{SERVICES['streaming_coordinator']}/streams"
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Streaming coordinator streams request failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== 비용 모니터링 API ====================
@@ -640,9 +869,145 @@ async def log_system_event(request: Request):
         redis_client.expire(key, 86400)
         
         return {"status": "logged", "event_type": event_type, "task_id": task_id}
-        
+
     except Exception as e:
         logger.error(f"System event logging failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== 스트리밍 엔드포인트 ====================
+
+@app.post("/api/streaming/translate")
+async def streaming_translate(request: Request):
+    """스트리밍 번역 요청"""
+    if not streaming_handler:
+        raise HTTPException(status_code=503, detail="스트리밍 핸들러가 초기화되지 않았습니다")
+
+    try:
+        body = await request.json()
+        from src.streaming_handler import StreamingRequest
+
+        streaming_request = StreamingRequest(**body)
+        result = await streaming_handler.process_streaming_request(streaming_request)
+
+        logger.info(f"🚀 스트리밍 번역 요청 처리: {streaming_request.task_id}")
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ 스트리밍 번역 요청 실패: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 중복 라우트 제거됨: 상태 조회는 상단 정의를 사용
+
+@app.get("/api/streaming/rollout")
+async def get_rollout_status():
+    """스트리밍 롤아웃 상태 조회"""
+    if not streaming_handler:
+        raise HTTPException(status_code=503, detail="스트리밍 핸들러가 초기화되지 않았습니다")
+
+    try:
+        return await streaming_handler.get_rollout_status()
+    except Exception as e:
+        logger.error(f"❌ 롤아웃 상태 조회 실패: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/streaming/rollout")
+async def set_rollout_percentage(request: Request):
+    """스트리밍 롤아웃 비율 설정"""
+    if not streaming_handler:
+        raise HTTPException(status_code=503, detail="스트리밍 핸들러가 초기화되지 않았습니다")
+
+    try:
+        body = await request.json()
+        percentage = body.get("percentage")
+
+        if percentage is None or not isinstance(percentage, int) or not 0 <= percentage <= 100:
+            raise HTTPException(status_code=400, detail="올바른 percentage (0-100)를 제공해주세요")
+
+        result = await streaming_handler.set_rollout_percentage(percentage)
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ 롤아웃 비율 설정 실패: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.websocket("/api/streaming/ws/{connection_id}")
+async def streaming_websocket_endpoint(websocket: WebSocket, connection_id: str):
+    """스트리밍 WebSocket 엔드포인트"""
+    if not streaming_handler:
+        await websocket.close(code=1013, reason="스트리밍 핸들러가 초기화되지 않았습니다")
+        return
+
+    try:
+        await streaming_handler.handle_websocket_connection(websocket, connection_id)
+    except Exception as e:
+        logger.error(f"❌ WebSocket 연결 오류: {e}")
+
+# ==================== Translation Worker Pool 엔드포인트 ====================
+
+@app.get("/api/translation-pool/status")
+async def get_translation_pool_status():
+    """번역 워커 풀 상태 조회"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{SERVICES['translation_worker_pool']}/workers/status")
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Translation pool status check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/translation-pool/metrics")
+async def get_translation_pool_metrics():
+    """번역 워커 풀 메트릭 조회"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{SERVICES['translation_worker_pool']}/metrics")
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Translation pool metrics check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Performance Monitor 엔드포인트 ====================
+
+@app.get("/api/performance-monitor/summary")
+async def get_performance_summary():
+    """성능 모니터 요약 조회"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{SERVICES['performance_monitor']}/summary")
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Performance monitor summary check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/performance-monitor/metrics/{metric_type}")
+async def get_performance_metrics(metric_type: str):
+    """특정 성능 메트릭 조회"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{SERVICES['performance_monitor']}/metrics/{metric_type}")
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Performance metrics check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==================== Streaming Coordinator 엔드포인트 ====================
+
+@app.get("/api/streaming-coordinator/status")
+async def get_streaming_coordinator_status():
+    """스트리밍 코디네이터 상태 조회"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{SERVICES['streaming_coordinator']}/status")
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Streaming coordinator status check failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
