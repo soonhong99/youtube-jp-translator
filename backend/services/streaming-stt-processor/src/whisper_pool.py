@@ -5,6 +5,7 @@ Whisper Model Pool
 
 import asyncio
 import logging
+import os
 import time
 from typing import List, Optional, Dict, Any
 import threading
@@ -27,6 +28,7 @@ class WhisperModelPool:
         self.model_name = model_name
         self.pool_size = pool_size
         self.device = self._determine_device(device)
+        self.cpu_threads = self._determine_cpu_threads()
 
         # 모델 풀
         self.models: List[WhisperModel] = []
@@ -59,6 +61,30 @@ class WhisperModelPool:
             else:
                 return "cpu"
         return device
+
+    def _determine_cpu_threads(self) -> int:
+        """모델당 CPU 스레드 수 결정 - 성능 최적화"""
+        if self.device != "cpu":
+            return 0
+
+        cpu_count = os.cpu_count() or 1
+        if cpu_count <= 1:
+            return 1
+
+        # 성능 최적화: 더 많은 스레드 할당
+        # 8코어 시스템에서 3모델 -> 4스레드/모델 (오버커밋 허용)
+        if cpu_count >= 8:
+            # 고성능 시스템: 코어 수의 50-75% 활용
+            threads_per_model = max(3, min(6, (cpu_count * 3) // (self.pool_size * 2)))
+        elif cpu_count >= 4:
+            # 중간 성능: 코어 수의 75% 활용
+            threads_per_model = max(2, (cpu_count * 3) // 4)
+        else:
+            # 저성능: 기존 로직
+            threads_per_model = max(1, cpu_count // max(1, self.pool_size))
+
+        logger.info(f"🧵 CPU 스레드 최적화: {cpu_count}코어 → {threads_per_model}스레드/모델 (총 {self.pool_size}모델)")
+        return threads_per_model
 
     async def initialize(self):
         """모델 풀 초기화"""
@@ -101,12 +127,28 @@ class WhisperModelPool:
             for i in range(self.pool_size):
                 logger.info(f"📥 Whisper 모델 {i+1}/{self.pool_size} 로딩 중...")
 
-                model = WhisperModel(
-                    self.model_name,
-                    device=self.device,
-                    compute_type="float16" if self.device != "cpu" else "int8",
-                    cpu_threads=4 if self.device == "cpu" else 0
-                )
+                # 성능 최적화된 Whisper 모델 설정
+                model_kwargs = {
+                    "model_size_or_path": self.model_name,
+                    "device": self.device,
+                    "compute_type": "float16" if self.device != "cpu" else "int8",
+                    "cpu_threads": self.cpu_threads if self.device == "cpu" else 0,
+                    # 성능 최적화 옵션들
+                    "num_workers": 1,  # 모델당 워커 수
+                    "download_root": None,  # 기본 캐시 디렉토리 사용
+                    "local_files_only": False,  # 온라인 다운로드 허용
+                }
+
+                # CPU 최적화 추가 설정
+                if self.device == "cpu" and self.cpu_threads > 0:
+                    # OpenMP 스레드 수 제한 (너무 많으면 오히려 느려짐)
+                    import os
+                    os.environ["OMP_NUM_THREADS"] = str(min(self.cpu_threads, 4))
+                    os.environ["MKL_NUM_THREADS"] = str(min(self.cpu_threads, 4))
+
+                logger.info(f"📥 모델 {i+1} 최적화 설정: {self.cpu_threads}스레드, {model_kwargs['compute_type']}")
+
+                model = WhisperModel(**model_kwargs)
 
                 models.append(model)
                 logger.info(f"✅ 모델 {i+1} 로딩 완료")

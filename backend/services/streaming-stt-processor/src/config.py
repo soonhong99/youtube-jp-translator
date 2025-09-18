@@ -39,10 +39,14 @@ class StreamingSTTConfig:
     REDIS_TTL_STT_RESULTS = int(os.getenv("REDIS_TTL_STT_RESULTS", "86400"))  # 24시간
     REDIS_TTL_PROGRESS = int(os.getenv("REDIS_TTL_PROGRESS", "7200"))  # 2시간
 
-    # 처리 성능 설정
-    MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "5"))
-    CHUNK_PROCESSING_TIMEOUT = int(os.getenv("CHUNK_PROCESSING_TIMEOUT", "30"))
-    MODEL_ALLOCATION_TIMEOUT = int(os.getenv("MODEL_ALLOCATION_TIMEOUT", "30"))
+    # 처리 성능 설정 - 최적화
+    MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "8"))  # 증가: 5 → 8
+    CHUNK_PROCESSING_TIMEOUT = int(os.getenv("CHUNK_PROCESSING_TIMEOUT", "20"))  # 감소: 30 → 20
+    MODEL_ALLOCATION_TIMEOUT = int(os.getenv("MODEL_ALLOCATION_TIMEOUT", "15"))  # 감소: 30 → 15
+
+    # 병렬 처리 최적화 설정
+    CHUNK_BATCH_SIZE = int(os.getenv("CHUNK_BATCH_SIZE", "6"))  # 3모델 x 2배치
+    MAX_WORKERS_PER_MODEL = int(os.getenv("MAX_WORKERS_PER_MODEL", "2"))  # 모델당 최대 워커 수
 
     # 로깅 설정
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

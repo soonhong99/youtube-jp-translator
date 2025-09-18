@@ -6,6 +6,18 @@ import CostAnalysisDashboard from '../components/CostAnalysisDashboard';
 import ReactPlayer from 'react-player';
 import axios from 'axios';
 
+const createStageTimings = () => ({
+  extract: { start: null, end: null, duration: null },
+  stt: { start: null, end: null, duration: null },
+  translation: { start: null, end: null, duration: null }
+});
+
+const STAGE_CARDS = [
+  { key: 'extract', label: '오디오 추출' },
+  { key: 'stt', label: 'STT 변환' },
+  { key: 'translation', label: 'AI 번역' }
+];
+
 const TranslateResult = () => {
   const location = useLocation();
   const youtubeUrl = location.state?.youtubeUrl;
@@ -27,10 +39,14 @@ const TranslateResult = () => {
   const [showCostDashboard, setShowCostDashboard] = useState(false);
   const [sttStepDetail, setSttStepDetail] = useState('');
   const [estimatedRemaining, setEstimatedRemaining] = useState(null);
+  const [stageTimings, setStageTimings] = useState(createStageTimings());
+  const [activeStage, setActiveStage] = useState(null);
+  const [liveStageElapsed, setLiveStageElapsed] = useState(0);
   
   const hasRequestedRef = useRef(false);
   const playerRef = useRef(null);
   const socketRef = useRef(null);
+  const activeStageRef = useRef(null);
 
   // YouTube URL에서 비디오 ID 추출
   const extractVideoId = (url) => {
@@ -82,18 +98,106 @@ const TranslateResult = () => {
     }
   };
 
+  const updateStageTiming = (stageKey, updates) => {
+    if (!stageKey) return;
+
+    setStageTimings((prev) => {
+      const next = { ...prev };
+      const current = { ...(next[stageKey] || {}) };
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'start') && updates.start !== null && updates.start !== undefined && !current.start) {
+        current.start = updates.start;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'end') && updates.end !== null && updates.end !== undefined && !current.end) {
+        current.end = updates.end;
+      }
+
+      if (current.start && current.end) {
+        current.duration = Math.max(0, (current.end - current.start) / 1000);
+      }
+
+      next[stageKey] = current;
+      return next;
+    });
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'start') && updates.start !== null && updates.start !== undefined) {
+      activeStageRef.current = stageKey;
+      setActiveStage(stageKey);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'end') && updates.end !== null && updates.end !== undefined) {
+      if (activeStageRef.current === stageKey) {
+        activeStageRef.current = null;
+      }
+      setActiveStage((prevActive) => (prevActive === stageKey ? null : prevActive));
+    }
+  };
+
+  useEffect(() => {
+    const stageInfo = stageTimings[activeStage];
+
+    if (!activeStage || !stageInfo?.start || stageInfo?.end) {
+      setLiveStageElapsed(0);
+      return;
+    }
+
+    const tick = () => {
+      setLiveStageElapsed(Math.max(0, (Date.now() - stageInfo.start) / 1000));
+    };
+
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [activeStage, stageTimings]);
+
+  const formatDuration = (value, isActive = false) => {
+    if (value === null || value === undefined) {
+      return isActive ? '진행 중' : '대기 중';
+    }
+
+    const fixed = value >= 10 ? value.toFixed(0) : value.toFixed(1);
+    return `${fixed}초${isActive ? ' 진행 중' : ''}`;
+  };
+
+  const renderStageDuration = (stageKey) => {
+    const stageInfo = stageTimings[stageKey];
+    if (!stageInfo) return '대기 중';
+
+    if (stageInfo.duration !== null && stageInfo.duration !== undefined) {
+      return formatDuration(stageInfo.duration);
+    }
+
+    if (activeStage === stageKey && stageInfo.start && !stageInfo.end) {
+      return formatDuration(liveStageElapsed, true);
+    }
+
+    if (stageInfo.start) {
+      return '종료 대기 중';
+    }
+
+    return '대기 중';
+  };
+
   useEffect(() => {
     if (!youtubeUrl || hasRequestedRef.current) return;
     hasRequestedRef.current = true;
 
     // 비디오 URL 설정
     setVideoUrl(youtubeUrl);
+    setStageTimings(createStageTimings());
+    setActiveStage(null);
+    setLiveStageElapsed(0);
+    activeStageRef.current = null;
+    setStartTime(null);
+    setProcessingTime(0);
 
     const processVideo = async () => {
       try {
         // 1. YouTube 오디오 추출
         setProcessingStep('EXTRACTING');
         setDetailedStatus('YouTube 비디오에서 오디오를 추출하고 있습니다...');
+        updateStageTiming('extract', { start: Date.now() });
         
         const taskId = `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
@@ -106,9 +210,12 @@ const TranslateResult = () => {
           throw new Error('오디오 추출에 실패했습니다.');
         }
 
+        updateStageTiming('extract', { end: Date.now() });
+
         // 2. STT 처리 요청
         setProcessingStep('PROCESSING');
         updateProcessingState('PROCESSING', 10);
+        updateStageTiming('stt', { start: Date.now() });
         
         await axios.post(`${process.env.REACT_APP_API_GATEWAY_URL}/api/stt/transcribe`, {
           wav_file_path: extractResponse.data.file_path,
@@ -141,6 +248,22 @@ const TranslateResult = () => {
           // 상태 업데이트
           if (msg.status) {
             updateProcessingState(msg.status, msg.progress);
+
+            if (msg.status === 'PROCESSING') {
+              updateStageTiming('stt', { start: Date.now() });
+            }
+
+            if (msg.status === 'STT_COMPLETED' || msg.status === 'STT_COMPLETED_SENTENCE_FIRST') {
+              updateStageTiming('stt', { end: Date.now() });
+            }
+
+            if (msg.status === 'AI_PROCESSING') {
+              updateStageTiming('translation', { start: Date.now() });
+            }
+
+            if (msg.status === 'AI_PROCESSING_COMPLETED' || msg.status === 'COMPLETED') {
+              updateStageTiming('translation', { end: Date.now() });
+            }
           }
           
           // 상세 진행 정보 업데이트
@@ -198,6 +321,10 @@ const TranslateResult = () => {
           setProcessingStep('FAILED');
           setStatus('WebSocket 연결 오류');
           setDetailedStatus('실시간 연결에 문제가 발생했습니다.');
+          const currentStage = activeStageRef.current;
+          if (currentStage) {
+            updateStageTiming(currentStage, { end: Date.now() });
+          }
         };
 
         ws.onclose = (event) => {
@@ -206,6 +333,10 @@ const TranslateResult = () => {
             setProcessingStep('FAILED');
             setStatus('연결 종료됨');
             setDetailedStatus('서버와의 연결이 종료되었습니다. 페이지를 새로고침해 주세요.');
+            const currentStage = activeStageRef.current;
+            if (currentStage) {
+              updateStageTiming(currentStage, { end: Date.now() });
+            }
           }
         };
 
@@ -214,6 +345,10 @@ const TranslateResult = () => {
         setProcessingStep('FAILED');
         setStatus('처리 실패');
         setDetailedStatus(error.response?.data?.detail || error.message || '알 수 없는 오류가 발생했습니다.');
+        const currentStage = activeStageRef.current;
+        if (currentStage) {
+          updateStageTiming(currentStage, { end: Date.now() });
+        }
         setLoading(false);
       }
     };
@@ -230,6 +365,7 @@ const TranslateResult = () => {
 
   // 비디오 ID 추출
   const videoId = extractVideoId(youtubeUrl || '');
+  const stageSummaryVisible = Object.values(stageTimings).some((stage) => stage.start);
 
   return (
     <div className="bg-gray-900 text-white min-h-screen px-4 py-8">
@@ -323,6 +459,28 @@ const TranslateResult = () => {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {stageSummaryVisible && (
+          <div className="bg-gray-800 rounded-lg p-4 mb-6">
+            <div className="text-sm text-gray-300 mb-3">단계별 처리 시간</div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {STAGE_CARDS.map(({ key, label }) => {
+                const isActive = activeStage === key && !stageTimings[key]?.end;
+                return (
+                  <div
+                    key={key}
+                    className={`p-3 rounded border ${isActive ? 'border-blue-500 bg-gray-700' : 'border-gray-700 bg-gray-800'}`}
+                  >
+                    <div className="text-xs uppercase tracking-wide text-gray-400">{label}</div>
+                    <div className="text-lg font-semibold text-white mt-1">
+                      {renderStageDuration(key)}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

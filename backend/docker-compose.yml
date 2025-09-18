@@ -245,6 +245,17 @@ services:
       - PYTHONUNBUFFERED=1
       - LOG_LEVEL=INFO
       - MAX_WORKERS=4  # 병렬 처리 워커 수
+      # ===== 성능 최적화 설정 =====
+      - WHISPER_POOL_SIZE=3  # Whisper 모델 풀 크기
+      - MAX_CONCURRENT_TASKS=8  # 동시 처리 작업 수
+      - CHUNK_BATCH_SIZE=6  # 청크 배치 크기
+      - CHUNK_PROCESSING_TIMEOUT=20  # 청크 처리 타임아웃
+      - MODEL_ALLOCATION_TIMEOUT=15  # 모델 할당 타임아웃
+      - MAX_WORKERS_PER_MODEL=2  # 모델당 최대 워커 수
+      # OpenMP 최적화 (CPU 병렬 처리)
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+      - OPENBLAS_NUM_THREADS=4
     depends_on:
       kafka:
         condition: service_healthy
@@ -257,11 +268,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2'
-          memory: 4G
+          cpus: '6'      # 증가: 2 → 6 (더 많은 CPU 활용)
+          memory: 6G     # 증가: 4G → 6G (모델 로딩 여유)
         reservations:
-          cpus: '1'
-          memory: 2G
+          cpus: '2'      # 증가: 1 → 2 (최소 보장 CPU)
+          memory: 3G     # 증가: 2G → 3G (최소 보장 메모리)
 
   # ==================== AI Orchestrator Services ====================
   

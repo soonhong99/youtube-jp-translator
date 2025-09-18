@@ -141,7 +141,9 @@ class AudioChunker:
                 # 음성 활동 감지 (VAD)
                 # 짧은 오디오의 경우 VAD가 너무 보수적일 수 있으므로
                 # 첫 청크이면서 전체 길이가 매우 짧은 경우에는 VAD를 완화
-                if self._has_speech_activity(chunk_data) or (chunk_index == 0 and total_samples < int(chunk_samples * 0.8)):
+                features = self._compute_audio_features(chunk_data)
+
+                if self._has_speech_activity_from_features(features) or (chunk_index == 0 and total_samples < int(chunk_samples * 0.8)):
                     # 임시 파일로 저장
                     chunk_file_path = self._save_chunk_to_file(
                         chunk_data, sr, chunk_index
@@ -157,7 +159,9 @@ class AudioChunker:
                             "start_sample": start_sample,
                             "end_sample": end_sample,
                             "has_overlap": chunk_index > 0,
-                            "overlap_duration": overlap_duration if chunk_index > 0 else 0.0
+                            "overlap_duration": overlap_duration if chunk_index > 0 else 0.0,
+                            "rms": features["rms"],
+                            "zcr": features["zcr"],
                         }
 
                         chunks.append(chunk_info)
@@ -175,6 +179,7 @@ class AudioChunker:
                 try:
                     chunk_file_path = self._save_chunk_to_file(audio_data, sr, 0)
                     if chunk_file_path:
+                        features = self._compute_audio_features(audio_data)
                         chunks.append({
                             "chunk_index": 0,
                             "file_path": chunk_file_path,
@@ -184,7 +189,9 @@ class AudioChunker:
                             "start_sample": 0,
                             "end_sample": total_samples,
                             "has_overlap": False,
-                            "overlap_duration": 0.0
+                            "overlap_duration": 0.0,
+                            "rms": features["rms"],
+                            "zcr": features["zcr"],
                         })
                         logger.debug("ℹ️ VAD 우회: 전체 파일을 단일 청크로 생성")
                 except Exception as e:
@@ -237,9 +244,10 @@ class AudioChunker:
 
                 # 청크 데이터 추출 (메모리에 보관)
                 chunk_data = audio_data[start_sample:end_sample]
+                features = self._compute_audio_features(chunk_data)
 
                 # 음성 활동 감지
-                if self._has_speech_activity(chunk_data) or (chunk_index == 0 and total_samples < int(chunk_samples * 0.8)):
+                if self._has_speech_activity_from_features(features) or (chunk_index == 0 and total_samples < int(chunk_samples * 0.8)):
                     # 메모리 기반 청크 정보 생성
                     chunk_info = {
                         "chunk_index": chunk_index,
@@ -252,6 +260,8 @@ class AudioChunker:
                         "end_sample": end_sample,
                         "has_overlap": chunk_index > 0,
                         "overlap_duration": overlap_duration if chunk_index > 0 else 0.0,
+                        "rms": features["rms"],
+                        "zcr": features["zcr"],
                         "memory_mode": True
                     }
 
@@ -267,6 +277,7 @@ class AudioChunker:
 
             # 청크가 하나도 생성되지 않았다면 파일 전체를 하나의 청크로 만들어 반환
             if not chunks and total_samples > 0:
+                features = self._compute_audio_features(audio_data)
                 chunks.append({
                     "chunk_index": 0,
                     "audio_data": audio_data,
@@ -278,7 +289,9 @@ class AudioChunker:
                     "end_sample": total_samples,
                     "has_overlap": False,
                     "overlap_duration": 0.0,
-                    "memory_mode": True
+                    "memory_mode": True,
+                    "rms": features["rms"],
+                    "zcr": features["zcr"]
                 })
                 logger.debug("ℹ️ VAD 우회: 전체 파일을 단일 청크로 생성 (메모리)")
 
@@ -288,23 +301,28 @@ class AudioChunker:
             logger.error(f"❌ 메모리 최적화 청킹 실패: {e}")
             return []
 
-    def _has_speech_activity(self, audio_data: np.ndarray, threshold: float = 0.01) -> bool:
-        """음성 활동 감지 (간단한 에너지 기반 VAD)"""
+    def _compute_audio_features(self, audio_data: np.ndarray) -> Dict[str, float]:
+        """청크의 기본 오디오 특징(RMS/ZCR) 계산"""
         if len(audio_data) == 0:
-            return False
+            return {"rms": 0.0, "zcr": 0.0}
 
-        # RMS 에너지 계산
-        rms_energy = np.sqrt(np.mean(audio_data ** 2))
-
-        # 영교차율 계산
+        rms_energy = float(np.sqrt(np.mean(audio_data ** 2)))
         zero_crossings = np.sum(np.diff(np.signbit(audio_data)))
-        zcr = zero_crossings / len(audio_data)
+        zcr = float(zero_crossings / len(audio_data))
 
-        # 음성 활동 판정
-        has_energy = rms_energy > threshold
-        has_variability = zcr > 0.01
+        return {"rms": rms_energy, "zcr": zcr}
 
-        return has_energy and has_variability
+    def _has_speech_activity_from_features(
+        self,
+        features: Dict[str, float],
+        energy_threshold: float = 0.01,
+        zcr_threshold: float = 0.01
+    ) -> bool:
+        """사전 계산된 특징으로 음성 활동 여부 판정"""
+        return (
+            features.get("rms", 0.0) > energy_threshold and
+            features.get("zcr", 0.0) > zcr_threshold
+        )
 
     def _save_chunk_to_file(
         self,

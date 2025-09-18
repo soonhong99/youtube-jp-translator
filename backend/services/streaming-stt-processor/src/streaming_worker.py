@@ -12,6 +12,7 @@ import io
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import numpy as np
 import soundfile as sf
@@ -79,8 +80,25 @@ class StreamingSTTWorker:
             "failed_tasks": 0,
             "active_tasks": 0,
             "avg_processing_time": 0.0,
-            "total_chunks_processed": 0
+            "total_chunks_processed": 0,
+            "chunk_time_total": 0.0,
+            "chunk_time_count": 0,
+            "chunk_time_max": 0.0,
+            "fast_path_chunks": 0,
+            "standard_path_chunks": 0
         }
+
+        # 전용 스레드 풀 최적화 - 더 많은 워커 허용
+        # 3모델 x 2배치 = 6개 동시 작업 지원
+        max_workers = max(
+            self.whisper_pool.pool_size * 2,  # 기본: 모델 수 x 2
+            getattr(self.config, 'CHUNK_BATCH_SIZE', 6)  # 최소: 배치 크기
+        )
+        self.transcription_executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="whisper_worker"
+        )
+        logger.info(f"🔧 스레드풀 최적화: {max_workers}개 워커 (모델: {self.whisper_pool.pool_size}개)")
 
     async def start(self):
         """워커 시작"""
@@ -127,6 +145,9 @@ class StreamingSTTWorker:
         if self.redis_client:
             await self.redis_client.close()
 
+        if self.transcription_executor:
+            self.transcription_executor.shutdown(wait=False)
+
         logger.info("✅ 스트리밍 STT 워커 종료 완료")
 
     async def process_streaming_stt(
@@ -163,6 +184,11 @@ class StreamingSTTWorker:
 
             total_chunks = len(chunks)
             self.active_tasks[task_id]["total_chunks"] = total_chunks
+            self.task_stats[task_id] = {
+                "chunk_times": [],
+                "fast_path": 0,
+                "standard_path": 0
+            }
 
             logger.info(f"📊 총 {total_chunks}개 청크 생성")
 
@@ -317,6 +343,9 @@ class StreamingSTTWorker:
     ) -> Optional[STTChunk]:
         """최적화된 청크 처리 (메모리 기반 + 성능 튜닝)"""
         model = None
+        elapsed_time = None
+        fast_path = self._should_use_fast_path(chunk_info)
+        start_time = time.perf_counter()
         try:
             chunk_id = f"{task_id}_chunk_{chunk_index}"
 
@@ -326,21 +355,29 @@ class StreamingSTTWorker:
             # 메모리 기반 vs 파일 기반 처리 분기
             if chunk_info.get("memory_mode", False):
                 result = await self._transcribe_from_memory(
-                    model, chunk_info, chunk_id, task_id, language
+                    model, chunk_info, chunk_id, task_id, language, fast_path
                 )
             else:
                 result = await self._transcribe_from_file(
-                    model, chunk_info, chunk_id, task_id, language
+                    model, chunk_info, chunk_id, task_id, language, fast_path
                 )
 
-            # 메트릭 업데이트
-            self.metrics["total_chunks_processed"] += 1
+            elapsed_time = time.perf_counter() - start_time
+            logger.debug(
+                f"⏱️ 청크 {chunk_index} 처리 완료: {elapsed_time:.2f}s"
+                f" ({'fast' if fast_path else 'standard'} path)"
+            )
             return result
 
         except Exception as e:
             logger.error(f"❌ 청크 {chunk_index} 최적화 처리 실패: {e}")
             return None
         finally:
+            if elapsed_time is None:
+                elapsed_time = time.perf_counter() - start_time
+
+            self._record_chunk_metrics(task_id, elapsed_time, fast_path)
+
             if model:
                 await self.whisper_pool.return_model(model)
 
@@ -350,26 +387,32 @@ class StreamingSTTWorker:
         chunk_info: Dict,
         chunk_id: str,
         task_id: str,
-        language: str
+        language: str,
+        fast_path: bool
     ) -> Optional[STTChunk]:
         """메모리 기반 STT 처리 (디스크 I/O 제거)"""
         try:
             # ndarray를 직접 입력하고, 동기 호출을 스레드로 오프로딩하여 이벤트 루프 블로킹 제거
             audio_array = np.asarray(chunk_info["audio_data"], dtype=np.float32)
 
-            segments, info = await asyncio.to_thread(
-                model.transcribe,
-                audio_array,
+            loop = asyncio.get_running_loop()
+            kwargs = dict(
                 language=language,
-                beam_size=3,        # 5→3 (속도 우선)
-                best_of=3,          # 5→3 (속도 우선)
-                temperature=0.1,    # 0.0→0.1 (약간의 무작위성 허용)
-                condition_on_previous_text=False,  # 청크간 독립성 확보
-                vad_filter=True,
+                beam_size=1 if fast_path else 3,
+                best_of=1 if fast_path else 3,
+                temperature=0.2 if fast_path else 0.1,
+                condition_on_previous_text=False,
+                vad_filter=False if fast_path else True,
                 vad_parameters=dict(
-                    min_silence_duration_ms=500,  # 1000→500ms (덜 보수적)
+                    min_silence_duration_ms=500,
                     speech_pad_ms=30
-                )
+                ) if not fast_path else None
+            )
+
+            task = partial(model.transcribe, audio_array, **{k: v for k, v in kwargs.items() if v is not None})
+            segments, info = await loop.run_in_executor(
+                self.transcription_executor,
+                task
             )
 
             return self._extract_chunk_result(segments, info, chunk_info, chunk_id, task_id, language)
@@ -384,24 +427,30 @@ class StreamingSTTWorker:
         chunk_info: Dict,
         chunk_id: str,
         task_id: str,
-        language: str
+        language: str,
+        fast_path: bool
     ) -> Optional[STTChunk]:
         """파일 기반 STT 처리 (기존 방식, 호환성 유지)"""
         try:
             # 동기 transcribe 호출을 스레드로 오프로딩하여 이벤트 루프 블로킹 방지
-            segments, info = await asyncio.to_thread(
-                model.transcribe,
-                chunk_info["file_path"],
+            loop = asyncio.get_running_loop()
+            kwargs = dict(
                 language=language,
-                beam_size=3,        # 5→3 (속도 우선)
-                best_of=3,          # 5→3 (속도 우선)
-                temperature=0.1,    # 0.0→0.1 (약간의 무작위성)
-                condition_on_previous_text=False,  # 청크간 독립성
-                vad_filter=True,
+                beam_size=1 if fast_path else 3,
+                best_of=1 if fast_path else 3,
+                temperature=0.2 if fast_path else 0.1,
+                condition_on_previous_text=False,
+                vad_filter=False if fast_path else True,
                 vad_parameters=dict(
-                    min_silence_duration_ms=500,  # 1000→500ms
+                    min_silence_duration_ms=500,
                     speech_pad_ms=30
-                )
+                ) if not fast_path else None
+            )
+
+            task = partial(model.transcribe, chunk_info["file_path"], **{k: v for k, v in kwargs.items() if v is not None})
+            segments, info = await loop.run_in_executor(
+                self.transcription_executor,
+                task
             )
 
             return self._extract_chunk_result(segments, info, chunk_info, chunk_id, task_id, language)
@@ -678,6 +727,20 @@ class StreamingSTTWorker:
             (current_avg * (total_completed - 1) + processing_time) / total_completed
         )
 
+        chunk_stats = self.task_stats.get(task_id, {})
+        chunk_times = chunk_stats.get("chunk_times", [])
+        if chunk_times:
+            avg_chunk_time = sum(chunk_times) / len(chunk_times)
+            fast_chunks = chunk_stats.get("fast_path", 0)
+            standard_chunks = chunk_stats.get("standard_path", 0)
+            logger.info(
+                f"📈 작업 {task_id} 청크 통계 - 평균 {avg_chunk_time:.2f}s, "
+                f"fast:{fast_chunks} standard:{standard_chunks}"
+            )
+
+        # 메모리 정리
+        self.task_stats.pop(task_id, None)
+
     async def _fail_task(self, task_id: str, error_message: str):
         """작업 실패 처리"""
         if task_id in self.active_tasks:
@@ -780,21 +843,22 @@ class StreamingSTTWorker:
             model = await self.whisper_pool.get_model()
 
             # 더 관대한 파라미터로 STT 처리 (오프로딩)
+            loop = asyncio.get_running_loop()
+
             if chunk_info.get("memory_mode", False):
                 audio_array = np.asarray(chunk_info["audio_data"], dtype=np.float32)
-
-                segments, info = await asyncio.to_thread(
+                task = partial(
                     model.transcribe,
                     audio_array,
                     language=language,
-                    beam_size=1,        # 최소 beam_size
-                    best_of=1,          # 최소 best_of
-                    temperature=0.3,    # 더 높은 temperature
+                    beam_size=1,
+                    best_of=1,
+                    temperature=0.3,
                     condition_on_previous_text=False,
-                    vad_filter=False,   # VAD 비활성화
+                    vad_filter=False,
                 )
             else:
-                segments, info = await asyncio.to_thread(
+                task = partial(
                     model.transcribe,
                     chunk_info["file_path"],
                     language=language,
@@ -805,6 +869,11 @@ class StreamingSTTWorker:
                     vad_filter=False,
                 )
 
+            segments, info = await loop.run_in_executor(
+                self.transcription_executor,
+                task
+            )
+
             return self._extract_chunk_result(segments, info, chunk_info, chunk_id, task_id, language)
 
         except Exception as e:
@@ -813,6 +882,42 @@ class StreamingSTTWorker:
         finally:
             if model:
                 await self.whisper_pool.return_model(model)
+
+    def _should_use_fast_path(self, chunk_info: Dict) -> bool:
+        """청크 특성에 따라 빠른 경로 사용 여부 결정"""
+        rms = float(chunk_info.get("rms", 0.0) or 0.0)
+        zcr = float(chunk_info.get("zcr", 0.0) or 0.0)
+        duration = float(chunk_info.get("duration", 0.0) or 0.0)
+
+        # 충분한 음성 에너지와 낮은 잡음(ZCR)이면 빠른 경로 사용
+        if duration < 1.5:
+            return False
+
+        return rms >= 0.015 and zcr <= 0.15
+
+    def _record_chunk_metrics(self, task_id: str, elapsed: float, fast_path: bool):
+        """청크 처리 시간 및 경로 메트릭 기록"""
+        try:
+            self.metrics["total_chunks_processed"] += 1
+            self.metrics["chunk_time_total"] += elapsed
+            self.metrics["chunk_time_count"] += 1
+            self.metrics["chunk_time_max"] = max(self.metrics["chunk_time_max"], elapsed)
+
+            if fast_path:
+                self.metrics["fast_path_chunks"] += 1
+            else:
+                self.metrics["standard_path_chunks"] += 1
+
+            if task_id in self.task_stats:
+                stats = self.task_stats[task_id]
+                stats.setdefault("chunk_times", []).append(elapsed)
+                if fast_path:
+                    stats["fast_path"] = stats.get("fast_path", 0) + 1
+                else:
+                    stats["standard_path"] = stats.get("standard_path", 0) + 1
+
+        except Exception as metric_error:
+            logger.debug(f"⚠️ 청크 메트릭 기록 중 오류: {metric_error}")
 
     async def _update_batch_progress(
         self,
