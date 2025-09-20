@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-config
+  namespace: youtube-translator
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-service:9092"
+  STT_REQUEST_TOPIC: "stt_requests"
+  STT_RESULT_TOPIC: "stt_results"
+  AI_PROCESSING_REQUEST_TOPIC: "ai_processing_requests"
+  AI_PROCESSING_RESULT_TOPIC: "ai_processing_results"
+  KAFKA_PARTITIONS: "3"
+  KAFKA_REPLICATION_FACTOR: "3"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: youtube-translator
+data:
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  REDIS_DB_WS_MESSAGES: "3"
+  REDIS_DB_AI_CACHE: "4"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stt-processor-config
+  namespace: youtube-translator
+data:
+  MODEL_SIZE: "base"
+  DEVICE: "cpu"
+  COMPUTE_TYPE: "int8"
+  MAX_WORKERS: "2"
+  WHISPER_POOL_SIZE: "1"
+  MAX_CONCURRENT_TASKS: "3"
+  CHUNK_BATCH_SIZE: "4"
+  CHUNK_PROCESSING_TIMEOUT: "30"
+  MODEL_ALLOCATION_TIMEOUT: "30"
+  MAX_WORKERS_PER_MODEL: "2"
+  OMP_NUM_THREADS: "2"
+  MKL_NUM_THREADS: "2"
+  OPENBLAS_NUM_THREADS: "2"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-orchestrator-config
+  namespace: youtube-translator
+data:
+  GEMINI_MODEL: "gemini-1.5-flash-latest"
+  GEMINI_TEMPERATURE: "0.3"
+  MAX_CONCURRENT_TASKS: "5"
+  LOG_LEVEL: "INFO"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-config
+  namespace: youtube-translator
+data:
+  YOUTUBE_EXTRACTOR_URL: "http://youtube-extractor-service:8000"
+  STT_PROCESSOR_URL: "http://stt-processor-api-service:8001"
+  AI_ORCHESTRATOR_URL: "http://ai-orchestrator-api-service:8002"
+  STREAMING_COORDINATOR_URL: "http://streaming-coordinator-service:8004"
+  TRANSLATION_WORKER_POOL_URL: "http://translation-worker-pool-service:8005"
+  PERFORMANCE_MONITOR_URL: "http://performance-monitor-service:8006"
+  RATE_LIMIT_CALLS: "100"
+  RATE_LIMIT_PERIOD: "60"

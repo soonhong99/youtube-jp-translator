@@ -1,0 +1,273 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-orchestrator-api-service
+  namespace: youtube-translator
+  labels:
+    app: ai-orchestrator-api
+spec:
+  ports:
+  - port: 8002
+    targetPort: 8002
+    name: http
+  selector:
+    app: ai-orchestrator-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-orchestrator-api
+  namespace: youtube-translator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-orchestrator-api
+  template:
+    metadata:
+      labels:
+        app: ai-orchestrator-api
+    spec:
+      containers:
+      - name: ai-orchestrator-api
+        image: ai-orchestrator:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8002
+        command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8002"]
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: kafka-config
+              key: KAFKA_BOOTSTRAP_SERVERS
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_PORT
+        - name: REDIS_DB_AI_CACHE
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_DB_AI_CACHE
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-secret
+              key: api-key
+        envFrom:
+        - configMapRef:
+            name: ai-orchestrator-config
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ai-orchestrator-worker-job
+  namespace: youtube-translator
+spec:
+  parallelism: 5          # 동시 5개 AI 추론 워커
+  completions: 1000       # 큰 수로 설정하여 지속적 실행
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: ai-orchestrator-worker
+    spec:
+      containers:
+      - name: ai-orchestrator-worker
+        image: ai-orchestrator:latest
+        imagePullPolicy: IfNotPresent
+        command: ["python", "-m", "src.worker"]
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: kafka-config
+              key: KAFKA_BOOTSTRAP_SERVERS
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_PORT
+        - name: REDIS_DB_AI_CACHE
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_DB_AI_CACHE
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-secret
+              key: api-key
+        envFrom:
+        - configMapRef:
+            name: ai-orchestrator-config
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "print('alive')"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+      restartPolicy: OnFailure
+---
+# Alternative: Deployment-based AI worker for continuous processing
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-orchestrator-worker
+  namespace: youtube-translator
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ai-orchestrator-worker
+  template:
+    metadata:
+      labels:
+        app: ai-orchestrator-worker
+    spec:
+      containers:
+      - name: ai-orchestrator-worker
+        image: ai-orchestrator:latest
+        imagePullPolicy: IfNotPresent
+        command: ["python", "-m", "src.worker"]
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: kafka-config
+              key: KAFKA_BOOTSTRAP_SERVERS
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_PORT
+        - name: REDIS_DB_AI_CACHE
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_DB_AI_CACHE
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-secret
+              key: api-key
+        envFrom:
+        - configMapRef:
+            name: ai-orchestrator-config
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "print('alive')"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "print('ready')"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-orchestrator-worker-hpa
+  namespace: youtube-translator
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-orchestrator-worker
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 30
+        periodSeconds: 60

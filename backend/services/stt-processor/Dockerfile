@@ -29,7 +29,7 @@ ARG MODEL_SIZE=base # 기본 모델 크기 (예: base, small, medium, large-v2)
 ARG MODEL_DIR=/app/models
 RUN mkdir -p ${MODEL_DIR}
 # 모델 다운로드 스크립트 실행 (필요 시 download_model 함수 사용)
-RUN python -c "from faster_whisper import download_model; download_model('${MODEL_SIZE}', output_dir='${MODEL_DIR}')"
+# Model files will be downloaded at runtime into the PVC-mounted MODEL_DIR
 # 참고: 모델 파일 크기가 크면 이미지 빌드 시간이 길어지고 이미지 크기가 커집니다.
 
 # 5. 소스 코드 복사

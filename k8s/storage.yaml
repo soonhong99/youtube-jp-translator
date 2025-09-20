@@ -1,0 +1,82 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: shared-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: kafka-storage-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: shared-storage
+  hostPath:
+    path: /data/kafka
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: zookeeper-storage-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: shared-storage
+  hostPath:
+    path: /data/zookeeper
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: redis-storage-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: shared-storage
+  hostPath:
+    path: /data/redis
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: youtube-audio-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+  - ReadWriteOnce  # dev 환경: 단일 노드에서 공유
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: shared-storage
+  hostPath:
+    path: /data/youtube-audio
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: whisper-models-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+  - ReadWriteOnce  # dev 환경: 단일 노드에서 공유
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: shared-storage
+  hostPath:
+    path: /data/whisper-models
+    type: DirectoryOrCreate

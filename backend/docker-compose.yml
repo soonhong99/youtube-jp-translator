@@ -186,7 +186,7 @@ services:
     container_name: stt-processor-api
     # 개발/테스트용 포트 노출 (운영시 제거)
     ports:
-      - "127.0.0.1:8001:8001"
+      - "0.0.0.0:8001:8001"
     volumes:
       - youtube_audio_data:/app/downloads
       - faster_whisper_models:/app/models

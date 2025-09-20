@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stt-processor-api
+  namespace: youtube-translator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stt-processor-api
+  template:
+    metadata:
+      labels:
+        app: stt-processor-api
+    spec:
+      containers:
+      - name: stt-processor-api
+        image: backend-stt-processor-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8001
+        command: ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001"]
+        env:
+        - name: MODEL_DIR
+          value: "/app/models"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: kafka-config
+              key: KAFKA_BOOTSTRAP_SERVERS
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: redis-config
+              key: REDIS_PORT
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-secret
+              key: api-key
+        - name: GEMINI_MODEL
+          value: "gemini-1.5-flash-latest"
+        - name: GEMINI_TEMPERATURE
+          value: "0.3"
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3

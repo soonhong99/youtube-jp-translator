@@ -646,7 +646,9 @@ async def websocket_proxy(websocket: WebSocket, task_id: str):
     # 연결 타임라인 기록
     log_timeline(task_id, agent="api-gateway", task="WS 연결 수립", progress=0)
     
-    stt_ws_url = f"ws://stt-processor-api:8001/ws/{task_id}"
+    # STT 서비스 URL에서 WebSocket URL 생성
+    stt_service_url = SERVICES["stt_processor"].replace("http://", "ws://")
+    stt_ws_url = f"{stt_service_url}/ws/{task_id}"
     logger.info(f"Proxying WebSocket for task {task_id} to {stt_ws_url}")
     
     try:

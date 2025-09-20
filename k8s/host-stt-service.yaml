@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: stt-processor-api-service
+  namespace: youtube-translator
+  labels:
+    app: stt-processor-api
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8001
+    targetPort: 8001
+    name: http
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: stt-processor-api-service
+  namespace: youtube-translator
+subsets:
+- addresses:
+  - ip: 172.19.0.1  # Kind cluster gateway
+  ports:
+  - port: 8001
+    name: http
